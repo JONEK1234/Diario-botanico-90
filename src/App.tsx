@@ -451,19 +451,42 @@ export default function App() {
     return { plantIds: [], diaryIds: [], activityIds: [] };
   });
 
-  // Cattura e imposta come già visti tutti gli ID storici presenti al primissimo caricamento per mostrare inizialmente "Nessun aggiornamento"
-  const captureInitialSeenIds = (plants: Plant[], activities: CareActivity[]) => {
+  // Cattura e imposta come già visti gli ID storici vecchi (antecedenti al giorno dell'ultimo aggiornamento generale)
+  const captureInitialSeenIds = (plants: Plant[], activities: CareActivity[], dbUpdatedAt?: string) => {
     if (isInitialCapturedRef.current) return;
     isInitialCapturedRef.current = true;
 
-    const plantIds = (plants || []).map(p => p.id);
+    const stored = localStorage.getItem("flora_seen_updates_v2");
+    if (stored) return; // Se ha già una cronologia di visualizzazione locale, non facciamo nulla!
+
+    const lastUpdateDay = dbUpdatedAt ? dbUpdatedAt.split("T")[0] : new Date().toISOString().split("T")[0];
+
+    const plantIds: string[] = [];
+    (plants || []).forEach(p => {
+      if (p.startDate !== lastUpdateDay) {
+        plantIds.push(p.id);
+      }
+    });
+
     const diaryIds: string[] = [];
     (plants || []).forEach(p => {
       if (p.diary) {
-        p.diary.forEach(d => diaryIds.push(d.id));
+        p.diary.forEach(d => {
+          const entryDay = d.date.split("T")[0];
+          if (entryDay !== lastUpdateDay) {
+            diaryIds.push(d.id);
+          }
+        });
       }
     });
-    const activityIds = (activities || []).map(a => a.id);
+
+    const activityIds: string[] = [];
+    (activities || []).forEach(a => {
+      const activityDay = a.dueDate ? a.dueDate : (a.completedAt ? a.completedAt.split("T")[0] : "");
+      if (activityDay !== lastUpdateDay) {
+        activityIds.push(a.id);
+      }
+    });
 
     const mergedSeen = {
       plantIds,
@@ -477,16 +500,18 @@ export default function App() {
     } catch (_) {}
   };
 
-  // Mostra solo le NUOVE piante aggiunte e non quelle precedenti già contrassegnate come lette
+  // Mostra solo le piante aggiunte quel giorno e non ancora lette
   const getNewPlants = () => {
     if (!state.plants) return [];
+    const lastUpdateDay = state.updatedAt ? state.updatedAt.split("T")[0] : new Date().toISOString().split("T")[0];
     const active = state.plants.filter(p => !p.isDead);
-    return active.filter(p => !seenUpdates.plantIds.includes(p.id));
+    return active.filter(p => p.startDate === lastUpdateDay && !seenUpdates.plantIds.includes(p.id));
   };
 
-  // Mostra solo le NUOVE diari e modifiche non ancora visualizzate
+  // Mostra solo le modifiche/note di diario di quel giorno non ancora lette
   const getNewUpdates = () => {
     if (!state.plants) return [];
+    const lastUpdateDay = state.updatedAt ? state.updatedAt.split("T")[0] : new Date().toISOString().split("T")[0];
     const allEntries: { plant: Plant; entry: DiaryEntry }[] = [];
     state.plants.forEach(p => {
       if (p.diary && !p.isDead) {
@@ -495,8 +520,10 @@ export default function App() {
         });
       }
     });
-    const filtered = allEntries.filter(({ entry }) => !seenUpdates.diaryIds.includes(entry.id));
-    // Ordiniamo per data decrescente
+    const filtered = allEntries.filter(({ entry }) => {
+      const entryDay = entry.date.split("T")[0];
+      return entryDay === lastUpdateDay && !seenUpdates.diaryIds.includes(entry.id);
+    });
     filtered.sort((a, b) => {
       const dateA = new Date(a.entry.date).getTime();
       const dateB = new Date(b.entry.date).getTime();
@@ -505,12 +532,14 @@ export default function App() {
     return filtered;
   };
 
-  // Mostra solo i NUOVI impegni non ancora visualizzati
+  // Mostra solo le attività pianificate o completate quel giorno non ancora lette
   const getNewPendingActivities = () => {
     if (!state.activities) return [];
-    const todos = state.activities.filter(a => a.status === "todo");
-    const filtered = todos.filter(a => !seenUpdates.activityIds.includes(a.id));
-    // Ordiniamo per scadenza imminente
+    const lastUpdateDay = state.updatedAt ? state.updatedAt.split("T")[0] : new Date().toISOString().split("T")[0];
+    const filtered = state.activities.filter(a => {
+      const isOfThatDay = a.dueDate === lastUpdateDay || (a.completedAt && a.completedAt.startsWith(lastUpdateDay));
+      return isOfThatDay && !seenUpdates.activityIds.includes(a.id);
+    });
     filtered.sort((a, b) => {
       const dateA = new Date(a.dueDate).getTime();
       const dateB = new Date(b.dueDate).getTime();
@@ -782,7 +811,7 @@ export default function App() {
             if (docSnap.exists()) {
               const parsedData = docSnap.data();
               if (parsedData && (parsedData.plants || parsedData.activities)) {
-                captureInitialSeenIds(parsedData.plants || [], parsedData.activities || []);
+                captureInitialSeenIds(parsedData.plants || [], parsedData.activities || [], parsedData.updatedAt);
                 setState(prev => {
                   // Evita re-render inutili se non ci sono novità di sostanza
                   if (JSON.stringify(prev.plants) === JSON.stringify(parsedData.plants) &&
@@ -1887,7 +1916,7 @@ export default function App() {
             }
           }
 
-          captureInitialSeenIds(parsedData.plants || [], parsedData.activities || []);
+          captureInitialSeenIds(parsedData.plants || [], parsedData.activities || [], parsedData.updatedAt);
           
           setState({
             plants: parsedData.plants || [],
@@ -2110,6 +2139,8 @@ export default function App() {
           const newUpdates = getNewUpdates();
           const newActivities = getNewPendingActivities();
           const hasNewUpdates = newPlants.length > 0 || newUpdates.length > 0 || newActivities.length > 0;
+
+          if (!hasNewUpdates) return null;
 
           return (
             <motion.div
@@ -2444,15 +2475,17 @@ export default function App() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto md:justify-end">
-          <button
-            onClick={handleForceDownload}
-            disabled={isSyncing}
-            className="flex items-center justify-center gap-1.5 px-4 py-2 bg-white border border-[#ccd4ca] hover:bg-stone-50 text-stone-700 rounded-xl text-xs font-semibold cursor-pointer transition-all active:scale-95 shadow-sm disabled:opacity-50"
-            title="Forza lo scaricamento e sincronizzazione in discesa dell'orto dal Cloud"
-          >
-            <RefreshCcw className="w-3.5 h-3.5 text-stone-500 shrink-0" />
-            Scarica dal Cloud (Forza Aggiornamento)
-          </button>
+          {!isReadOnlyMode && (
+            <button
+              onClick={handleForceDownload}
+              disabled={isSyncing}
+              className="flex items-center justify-center gap-1.5 px-4 py-2 bg-white border border-[#ccd4ca] hover:bg-stone-50 text-stone-700 rounded-xl text-xs font-semibold cursor-pointer transition-all active:scale-95 shadow-sm disabled:opacity-50"
+              title="Forza lo scaricamento e sincronizzazione in discesa dell'orto dal Cloud"
+            >
+              <RefreshCcw className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+              Scarica dal Cloud (Forza Aggiornamento)
+            </button>
+          )}
 
           {!isReadOnlyMode && (
             <button
