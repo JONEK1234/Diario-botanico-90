@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    
+    function isValidShare(data) {
+      return data.plants is list && data.plants.size() <= 120;
+    }
+    
+    match /shares/{shareId} {
+      allow get: if isValidId(shareId);
+      allow create, update: if isValidId(shareId) && isValidShare(request.resource.data);
+    }
+  }
+}

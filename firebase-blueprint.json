@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "shares": {
+      "title": "shares",
+      "description": "Oggetti di condivisione dello stato della serra e dell'orto botanico",
+      "type": "object",
+      "properties": {
+        "plants": {
+          "type": "array",
+          "description": "Lista delle piante nell'orto con foto e diari"
+        },
+        "activities": {
+          "type": "array",
+          "description": "Lista delle attività e compiti associati alle piante"
+        },
+        "smartTrackers": {
+          "type": "array",
+          "description": "Lista dei tracker intelligenti"
+        },
+        "settings": {
+          "type": "object",
+          "description": "Impostazioni utente personalizzate"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp di creazione della condivisione"
+        }
+      },
+      "required": ["plants"]
+    }
+  },
+  "firestore": {
+    "shares/{shareId}": {
+      "schema": "shares",
+      "description": "Raccolta di stati della serra condivisi per link brevi"
+    }
+  }
+}

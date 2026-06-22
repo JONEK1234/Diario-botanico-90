@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Diario Botanico",
+  "description": "Un elegante diario botanico digitale premium per documentare e descrivere la crescita di piante con cura, estetica editoriale e un\u0027anima respirante.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
