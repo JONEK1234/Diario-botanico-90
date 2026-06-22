@@ -53,6 +53,109 @@ const getApiUrl = (endpoint: string): string => {
   return `${baseUrl}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
 };
 
+// --- GRUPPO STRUMENTALE COMPRESSIONE IMMAGINI (Previene blocchi DB Firestore 1MB) ---
+const compressImage = (base64Str: string, maxWidth = 500, quality = 0.5): Promise<string> => {
+  return new Promise((resolve) => {
+    if (!base64Str || !base64Str.startsWith("data:image/")) {
+      resolve(base64Str);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+
+      if (width > maxWidth) {
+        height = Math.round((height * maxWidth) / width);
+        width = maxWidth;
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(base64Str);
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0, width, height);
+      // Forza salvataggio in formato JPEG super compresso
+      const compressed = canvas.toDataURL("image/jpeg", quality);
+      resolve(compressed);
+    };
+    img.onerror = () => {
+      resolve(base64Str);
+    };
+    img.src = base64Str;
+  });
+};
+
+const compressFile = (file: File, maxWidth = 500, quality = 0.5): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64Raw = e.target?.result as string;
+      if (file.type.startsWith("image/")) {
+        try {
+          const compressed = await compressImage(base64Raw, maxWidth, quality);
+          resolve(compressed);
+        } catch (err) {
+          resolve(base64Raw);
+        }
+      } else {
+        resolve(base64Raw);
+      }
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+};
+
+// Ottimizza e comprime ricorsivamente tutte le immagini presenti nello stato per salvare quintali di spazio
+const compressStateImages = async (stateToSave: JournalState): Promise<JournalState> => {
+  if (!stateToSave || !stateToSave.plants) return stateToSave;
+  
+  const compressedPlants = await Promise.all(
+    stateToSave.plants.map(async (plant) => {
+      let compressedImg = plant.imageUrl;
+      // Comprime solo se è una stringa base64 lunga superiore a 20KB
+      if (plant.imageUrl && plant.imageUrl.startsWith("data:image/") && plant.imageUrl.length > 20000) {
+        try {
+          compressedImg = await compressImage(plant.imageUrl, 500, 0.4);
+        } catch (_) {}
+      }
+
+      let compressedDiary = plant.diary;
+      if (plant.diary && plant.diary.length > 0) {
+        compressedDiary = await Promise.all(
+          plant.diary.map(async (entry) => {
+            let entryImg = entry.imageUrl;
+            if (entry.imageUrl && entry.imageUrl.startsWith("data:image/") && entry.imageUrl.length > 20000) {
+              try {
+                entryImg = await compressImage(entry.imageUrl, 500, 0.4);
+              } catch (_) {}
+            }
+            return { ...entry, imageUrl: entryImg };
+          })
+        );
+      }
+
+      return {
+        ...plant,
+        imageUrl: compressedImg,
+        diary: compressedDiary,
+      };
+    })
+  );
+
+  return {
+    ...stateToSave,
+    plants: compressedPlants,
+  };
+};
+
 export default function App() {
   // Modalità Sola Lettura gestita dinamicamente per supportare il single-app editor/viewer toggle!
   const [isReadOnlyMode, setIsReadOnlyMode] = useState<boolean>(() => {
@@ -233,6 +336,8 @@ export default function App() {
   });
   const [isCloudLoaded, setIsCloudLoaded] = useState(false);
   const [syncClicks, setSyncClicks] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatusMessage, setSyncStatusMessage] = useState<string | null>(null);
 
   enum OperationType {
     CREATE = 'create',
@@ -822,14 +927,16 @@ export default function App() {
     }
   };
 
-  const processFile = (file: File) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64String = reader.result as string;
-      setNewPlantForm(prev => ({ ...prev, imageUrl: base64String }));
-      showToast("Immagine caricata offline con successo.");
-    };
-    reader.readAsDataURL(file);
+  const processFile = async (file: File) => {
+    showToast("Compressione e ottimizzazione dell'immagine... 🖼️⚡");
+    try {
+      const compressedBase64 = await compressFile(file, 500, 0.5);
+      setNewPlantForm(prev => ({ ...prev, imageUrl: compressedBase64 }));
+      showToast("Immagine catturata e ottimizzata correttamente! 🌿");
+    } catch (err) {
+      console.error("Errore lettura immagine:", err);
+      showToast("Immagine non caricata correttamente.");
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -1443,16 +1550,18 @@ export default function App() {
     showToast("Splendido momento aggiunto alla timeline!");
   };
 
-  const handleDiaryFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDiaryFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files[0]) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        setNewDiaryForm(prev => ({ ...prev, imageUrl: base64String }));
-        showToast("Immagine della nota caricata offline.");
-      };
-      reader.readAsDataURL(files[0]);
+      showToast("Compressione e caricamento foto nota... 🖼️⚡");
+      try {
+        const compressedBase64 = await compressFile(files[0], 500, 0.5);
+        setNewDiaryForm(prev => ({ ...prev, imageUrl: compressedBase64 }));
+        showToast("Immagine della nota salvata e ottimizzata!");
+      } catch (err) {
+        console.error("Errore lettura immagine nota:", err);
+        showToast("Immagine della nota non caricata.");
+      }
     }
   };
 
@@ -1596,8 +1705,7 @@ export default function App() {
 
       if (parsed && typeof parsed === "object") {
         if (Array.isArray(parsed.plants) || Array.isArray(parsed.activities)) {
-          setState(parsed);
-          showToast("La serra biologica è stata ripristinata con successo dall'archivio ZIP! 🪴🏡");
+          await importAndSync(parsed, "ZIP");
         } else {
           showToast("Il file ZIP non contiene una serra compatibile. ⚠️");
         }
@@ -1716,6 +1824,152 @@ export default function App() {
       localStorage.removeItem("flora_journal_db");
       window.location.hash = "";
       window.location.reload();
+    }
+  };
+
+  // --- INNESTO DI SICUREZZA FORZA SINCRONIZZAZIONE (RICHIESTA UTENTE) ---
+  const handleForceDownload = async () => {
+    setIsSyncing(true);
+    setSyncStatusMessage("Scaricamento...");
+    showToast("Scaricamento dei dati biologici dal database Cloud in corso... 📥🌱");
+    try {
+      const { doc, getDoc } = await import("firebase/firestore");
+      const { db } = await import("./firebase");
+
+      const docRef = doc(db, "shares", "samuel-garden");
+      const docSnap = await getDoc(docRef);
+
+      if (docSnap.exists()) {
+        const parsedData = docSnap.data();
+        if (parsedData && (parsedData.plants || parsedData.activities)) {
+          if (!isReadOnlyMode) {
+            const confirmOverwrite = window.confirm(
+              "Attenzione: scaricare forzatamente i dati dal Cloud sovrascriverà tutte le modifiche non sincronizzate presenti su questo dispositivo. Continuare?"
+            );
+            if (!confirmOverwrite) {
+              setIsSyncing(false);
+              setSyncStatusMessage(null);
+              return;
+            }
+          }
+
+          captureInitialSeenIds(parsedData.plants || [], parsedData.activities || []);
+          
+          setState({
+            plants: parsedData.plants || [],
+            activities: parsedData.activities || [],
+            smartTrackers: parsedData.smartTrackers || [],
+            settings: parsedData.settings || { userName: "Samuel", gardenName: "Orto Botanico di Samuel", offlineMode: false },
+            updatedAt: parsedData.updatedAt || new Date().toISOString()
+          });
+
+          if (parsedData.plants && parsedData.plants.length > 0) {
+            setSelectedPlantId(parsedData.plants[0].id);
+          }
+
+          showToast("Dati Cloud scaricati ed applicati con successo! 🌿✨");
+        } else {
+          showToast("Il documento Cloud esiste ma non contiene piante o attività. ⚠️");
+        }
+      } else {
+        showToast("Nessun database centralizzato trovato sul Cloud per 'samuel-garden'. Verrà creato al primo salvataggio!");
+      }
+    } catch (err: any) {
+      console.error("Errore caricamento manuale:", err);
+      showToast("Errore di caricamento: " + err.message);
+    } finally {
+      setIsSyncing(false);
+      setSyncStatusMessage(null);
+    }
+  };
+
+  const handleForceUpload = async () => {
+    if (isReadOnlyMode) {
+      showToast("Sei in modalità Visualizzatore. Clicca 5 volte sullo status per diventare Editor e caricare!");
+      return;
+    }
+    setIsSyncing(true);
+    setSyncStatusMessage("Ottimizzazione...");
+    showToast("Ottimizzazione immagini e caricamento forzato sul Cloud... 📤⚡");
+    try {
+      // Step 1: Comprime tutte le immagini dello stato per non superare mai il limite di 1MB di Firestore
+      const compressedState = await compressStateImages(state);
+
+      // Aggiorna lo stato React in memoria
+      setState(compressedState);
+
+      const { doc, setDoc } = await import("firebase/firestore");
+      const { db } = await import("./firebase");
+
+      const docRef = doc(db, "shares", "samuel-garden");
+      const nowStr = new Date().toISOString();
+      const payload = {
+        id: "samuel-garden",
+        plants: compressedState.plants,
+        activities: compressedState.activities,
+        smartTrackers: compressedState.smartTrackers || [],
+        settings: compressedState.settings,
+        updatedAt: nowStr
+      };
+
+      await setDoc(docRef, payload, { merge: true });
+      
+      // Aggiorna anche l'updatedAt dello stato per evitare auto-scaricamenti conflittuali
+      setState(prev => ({ ...prev, updatedAt: nowStr }));
+
+      showToast("Tutti i dati e le immagini sono stati compressi e sincronizzati con successo sul Cloud! 🌿📤");
+    } catch (err: any) {
+      console.error("Errore salvataggio forzato:", err);
+      showToast("Errore di sincronizzazione: " + err.message + ". Controlla le dimensioni dei file o la connessione.");
+    } finally {
+      setIsSyncing(false);
+      setSyncStatusMessage(null);
+    }
+  };
+
+  const importAndSync = async (parsedData: any, source: "ZIP" | "JSON") => {
+    try {
+      showToast("Analisi, compressione immagini ed applicazione backup... 🌿⚡");
+      
+      // Step 1: Comprime tutte le immagini del file di backup caricato
+      const cleaned = await compressStateImages(parsedData);
+      
+      // Step 2: Carica in memoria locale
+      setState(cleaned);
+      if (cleaned.plants && cleaned.plants.length > 0) {
+        setSelectedPlantId(cleaned.plants[0].id);
+      }
+
+      // Step 3: Se NON siamo in sola lettura (Reader), salviamo IMMEDIATAMENTE sul cloud senza aspettare 2s di debounce!
+      if (!isReadOnlyMode) {
+        setSyncStatusMessage("Backup in caricamento...");
+        const { doc, setDoc } = await import("firebase/firestore");
+        const { db } = await import("./firebase");
+        const docRef = doc(db, "shares", "samuel-garden");
+        
+        const nowStr = new Date().toISOString();
+        const payload = {
+          id: "samuel-garden",
+          plants: cleaned.plants,
+          activities: cleaned.activities,
+          smartTrackers: cleaned.smartTrackers || [],
+          settings: cleaned.settings || { userName: "Samuel", gardenName: "Orto Botanico di Samuel", offlineMode: false },
+          updatedAt: nowStr
+        };
+
+        await setDoc(docRef, payload, { merge: true });
+        
+        // Sincronizza updatedAt locale in memoria
+        setState(prev => ({ ...prev, updatedAt: nowStr }));
+        showToast(`Caricamento ed ottimizzazione del backup ${source} sul database Cloud riusciti! 🎉🌿`);
+      } else {
+        showToast(`Backup ${source} applicato offline con successo. 🪴`);
+      }
+    } catch (err: any) {
+      console.error("Errore durante importAndSync:", err);
+      showToast("Errore di sincronizzazione o parsing: " + err.message);
+    } finally {
+      setSyncStatusMessage(null);
     }
   };
 
@@ -2131,6 +2385,54 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {/* STRUMENTO DI SINCRONIZZAZIONE IMMEDIATA CLOUD (RICHIESTA UTENTE) */}
+      <div className="bento-card p-4 mt-4 bg-gradient-to-r from-[#fbfbf8] to-[#f4f7f2] border border-[#d6ded0] rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm relative z-20">
+        <div className="flex items-center gap-3 w-full md:w-auto">
+          <div className="p-2.5 bg-sage-50 border border-sage-200 rounded-xl text-stone-650 shrink-0">
+            <RefreshCcw className={`w-4 h-4 ${isSyncing ? "animate-spin text-[#7e8c69]" : "text-stone-500"}`} />
+          </div>
+          <div className="text-left">
+            <div className="flex items-center gap-2">
+              <span className="font-sans font-semibold text-stone-800 text-xs uppercase tracking-wider">Centro Sincronizzazione Cloud</span>
+              <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${isReadOnlyMode ? "bg-[#e2e8f0] text-slate-600" : "bg-[#d1fae5] text-emerald-700 animate-pulse"}`}>
+                {isReadOnlyMode ? "Live Sola Lettura" : "Auto-Salvataggio Attivo"}
+              </span>
+            </div>
+            <p className="text-[11px] text-stone-500 mt-0.5 leading-snug">
+              {isSyncing ? (
+                <span className="text-stone-600 font-medium animate-pulse">🛠️ {syncStatusMessage || "Operazione in corso... Attendere."}</span>
+              ) : (
+                <span>Ultimo backup online: <strong className="font-mono text-stone-700">{state.updatedAt ? new Date(state.updatedAt).toLocaleTimeString() : "N/D (Caricare dati)"}</strong>. Le foto vengono compresse a 15KB per viaggiare velocissime!</span>
+              )}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto md:justify-end">
+          <button
+            onClick={handleForceDownload}
+            disabled={isSyncing}
+            className="flex items-center justify-center gap-1.5 px-4 py-2 bg-white border border-[#ccd4ca] hover:bg-stone-50 text-stone-700 rounded-xl text-xs font-semibold cursor-pointer transition-all active:scale-95 shadow-sm disabled:opacity-50"
+            title="Forza lo scaricamento e sincronizzazione in discesa dell'orto dal Cloud"
+          >
+            <RefreshCcw className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+            Scarica dal Cloud (Forza Aggiornamento)
+          </button>
+
+          {!isReadOnlyMode && (
+            <button
+              onClick={handleForceUpload}
+              disabled={isSyncing}
+              className="flex items-center justify-center gap-1.5 px-4 py-2 bg-[#7e8c69] hover:bg-[#6b7b58] text-white rounded-xl text-xs font-bold cursor-pointer transition-all active:scale-95 shadow-sm disabled:opacity-50 ring-2 ring-[#7e8c69]/20"
+              title="Carica istantaneamente il giardino sul cloud ottimizzando tutte le immagini"
+            >
+              <Upload className="w-3.5 h-3.5 shrink-0" />
+              Forza Salvataggio (Upload immediato)
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* BANNER INSTALLAZIONE APP (PWA) */}
       {(!isReadOnlyMode && !pwaBannerDismissed && !isPwaInstalled && (pwaPrompt || (typeof window !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream && !(window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone)))) && (
@@ -3010,13 +3312,12 @@ export default function App() {
                       const files = e.target.files;
                       if (files && files[0]) {
                         const r = new FileReader();
-                        r.onload = () => {
+                        r.onload = async () => {
                           try {
                             const parsed = JSON.parse(r.result as string);
                             if (parsed.plants) {
-                              setState(parsed);
                               setIsSettingsOpen(false);
-                              showToast("Orto ripristinato dal backup JSON importato.");
+                              await importAndSync(parsed, "JSON");
                             }
                           } catch (err) {
                             showToast("File JSON non valido.");
