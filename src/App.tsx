@@ -535,10 +535,10 @@ export default function App() {
 
   // Auto-salvataggio nel localStorage
   useEffect(() => {
-    if (!isReadOnlyMode) {
+    if (!isReadOnlyMode && isCloudLoaded) {
       localStorage.setItem("flora_journal_db", JSON.stringify(state));
     }
-  }, [state, isReadOnlyMode]);
+  }, [state, isReadOnlyMode, isCloudLoaded]);
 
   useEffect(() => {
     if (selectedPlantId && !isReadOnlyMode) {
@@ -651,85 +651,115 @@ export default function App() {
     };
   }, []);
 
-  // A. Caricamento asincrono iniziale da Firestore per sincronizzare la versione singola del diario botanico!
+  // A. Caricamento e Sincronizzazione Centralizzata (Cloud Database "samuel-garden")
   useEffect(() => {
-    if (isReadOnlyMode) {
-      setIsCloudLoaded(true);
-      return;
-    }
-    
     let isMounted = true;
-    
-    const loadSharedGarden = async () => {
-      try {
-        const { doc, getDoc } = await import("firebase/firestore");
-        const { db } = await import("./firebase");
-        
-        const targetId = activeShareId || "samuel-garden";
-        const docRef = doc(db, "shares", targetId);
-        let docSnap;
-        try {
-          docSnap = await getDoc(docRef);
-        } catch (getErr) {
-          handleFirestoreError(getErr, OperationType.GET, `shares/${targetId}`);
-        }
-        
-        if (!isMounted) return;
+    let unsubscribeFirestore: (() => void) | null = null;
 
-        if (docSnap && docSnap.exists()) {
-          const parsedData = docSnap.data();
-          if (parsedData && (parsedData.plants || parsedData.activities)) {
-            setState(prev => ({
-              plants: parsedData.plants || [],
-              activities: parsedData.activities || [],
-              smartTrackers: parsedData.smartTrackers || [],
-              settings: parsedData.settings || prev.settings
-            }));
-            if (parsedData.plants && parsedData.plants.length > 0) {
-              setSelectedPlantId(parsedData.plants[0].id);
+    const initCloudSync = async () => {
+      try {
+        const { doc, getDoc, onSnapshot, setDoc } = await import("firebase/firestore");
+        const { db } = await import("./firebase");
+
+        const docRef = doc(db, "shares", "samuel-garden");
+
+        if (isReadOnlyMode) {
+          // MODALITÀ VISUALIZZATORE: Ascolto in tempo reale (onSnapshot) del diario centralizzato del cloud
+          unsubscribeFirestore = onSnapshot(docRef, (docSnap) => {
+            if (!isMounted) return;
+            if (docSnap.exists()) {
+              const parsedData = docSnap.data();
+              if (parsedData && (parsedData.plants || parsedData.activities)) {
+                captureInitialSeenIds(parsedData.plants || [], parsedData.activities || []);
+                setState(prev => {
+                  // Evita re-render inutili se non ci sono novità di sostanza
+                  if (JSON.stringify(prev.plants) === JSON.stringify(parsedData.plants) &&
+                      JSON.stringify(prev.activities) === JSON.stringify(parsedData.activities) &&
+                      JSON.stringify(prev.smartTrackers) === JSON.stringify(parsedData.smartTrackers)) {
+                    return prev;
+                  }
+                  return {
+                    plants: parsedData.plants || [],
+                    activities: parsedData.activities || [],
+                    smartTrackers: parsedData.smartTrackers || [],
+                    settings: parsedData.settings || prev.settings
+                  };
+                });
+              }
             }
-            console.log("Diario botanico centralizzato caricato dal cloud con successo! ID:", targetId);
-          }
+            setIsCloudLoaded(true);
+          }, (err) => {
+            console.error("Errore Realtime Sync o permessi mancanti:", err);
+            setIsCloudLoaded(true);
+          });
         } else {
-          const { setDoc } = await import("firebase/firestore");
-          const initialState = getInitialState();
+          // MODALITÀ EDITOR: Caricamento asincrono singolo (one-shot) all'avvio per non disturbare la digitazione dell'editor
           try {
-            await setDoc(docRef, {
-              ...initialState,
-              id: targetId,
-              updatedAt: new Date().toISOString()
-            });
-          } catch (writeErr) {
-            handleFirestoreError(writeErr, OperationType.WRITE, `shares/${targetId}`);
+            const docSnap = await getDoc(docRef);
+            if (!isMounted) return;
+
+            if (docSnap.exists()) {
+              const parsedData = docSnap.data();
+              if (parsedData && (parsedData.plants || parsedData.activities)) {
+                setState({
+                  plants: parsedData.plants || [],
+                  activities: parsedData.activities || [],
+                  smartTrackers: parsedData.smartTrackers || [],
+                  settings: parsedData.settings || { userName: "Samuel", gardenName: "Orto Botanico di Samuel", offlineMode: false }
+                });
+                if (parsedData.plants && parsedData.plants.length > 0) {
+                  setSelectedPlantId(parsedData.plants[0].id);
+                }
+              }
+            } else {
+              // Crea di default se non esiste ancora
+              const initialState = getInitialState();
+              await setDoc(docRef, {
+                ...initialState,
+                id: "samuel-garden",
+                updatedAt: new Date().toISOString()
+              });
+              setState(initialState);
+            }
+          } catch (getErr) {
+            console.error("Errore lettura iniziale Editor:", getErr);
+          } finally {
+            if (isMounted) {
+              setIsCloudLoaded(true);
+            }
           }
-          console.log("Creato nuovo diario botanico centralizzato su Firestore! ID:", targetId);
         }
       } catch (err) {
-        console.warn("Errore caricamento iniziale da Firestore:", err);
-      } finally {
+        console.warn("Connessione Firestore o caricamento asincrono fallito, uso offline fallback:", err);
         if (isMounted) {
           setIsCloudLoaded(true);
         }
       }
     };
-    
-    loadSharedGarden();
+
+    initCloudSync();
 
     return () => {
       isMounted = false;
+      if (unsubscribeFirestore) {
+        unsubscribeFirestore();
+      }
     };
-  }, [activeShareId, isReadOnlyMode]);
+  }, [isReadOnlyMode]);
 
-  // B. Owner Auto-Sync: Salva automaticamente in tempo reale qualsiasi modifica apportata dal proprietario
+  // B. Autosave Editor: Salva in tempo reale su Firestore (con debounce) ogni volta che l'editor compie modifiche
   useEffect(() => {
     if (isReadOnlyMode) return;
-    if (!activeShareId) return;
-    if (!isCloudLoaded) return; // Non sovrascrivere mai il cloud fino a che il caricamento iniziale non è completato!
+    if (!isCloudLoaded) return; // Non sovrascrivere MAI il cloud prima che il caricamento iniziale sia avvenuto con successo!
 
     const timer = setTimeout(async () => {
       try {
+        const { doc, setDoc } = await import("firebase/firestore");
+        const { db } = await import("./firebase");
+
+        const docRef = doc(db, "shares", "samuel-garden");
         const payload = {
-          id: activeShareId,
+          id: "samuel-garden",
           plants: state.plants,
           activities: state.activities,
           smartTrackers: state.smartTrackers || [],
@@ -737,234 +767,16 @@ export default function App() {
           updatedAt: new Date().toISOString()
         };
 
-        // 1. Salva sul server Express / KVDB
-        try {
-          await fetch(getApiUrl("/api/shares"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-          });
-        } catch (serverErr) {
-          console.warn("Express background sync err:", serverErr);
-        }
-
-        // 2. Salva su Firestore
-        try {
-          const { doc, setDoc } = await import("firebase/firestore");
-          const { db } = await import("./firebase");
-          const docRef = doc(db, "shares", activeShareId);
-          await setDoc(docRef, payload, { merge: true });
-        } catch (firestoreErr) {
-          handleFirestoreError(firestoreErr, OperationType.WRITE, `shares/${activeShareId}`);
-        }
+        // Salva direttamente su Firestore
+        await setDoc(docRef, payload, { merge: true });
+        console.log("Diario centralizzato salvato perfettamente sul cloud (Firestore)!");
       } catch (err) {
-        console.error("Errore salvataggio automatico:", err);
+        console.error("Errore salvataggio automatico sul cloud:", err);
       }
-    }, 2500); // 2.5 secondi di ritardo per non saturare le richieste mentre l'utente compie azioni multiple
+    }, 2000); // 2 secondi di debounce per ottimizzare le performance
 
     return () => clearTimeout(timer);
-  }, [state, activeShareId, isReadOnlyMode, isCloudLoaded]);
-
-  // C. Viewer Realtime Sync: Riceve e aggiorna in tempo reale la serra visualizzata tramite link o id predefinito
-  useEffect(() => {
-    if (!isReadOnlyMode) return;
-    let hashRaw = "samuel-garden";
-    if (typeof window !== "undefined") {
-      if (window.location.hash.startsWith("#sharez=")) {
-        hashRaw = window.location.hash.replace("#sharez=", "");
-      } else if (window.location.hash.startsWith("#share=")) {
-        hashRaw = window.location.hash.replace("#share=", "");
-      } else if (activeShareId) {
-        hashRaw = activeShareId;
-      }
-    }
-    if (!hashRaw || hashRaw.length >= 50) return;
-
-    let activeSync = true;
-    let unsubscribeFirestore: (() => void) | null = null;
-
-    // Sincronizzazione tramite Firebase Firestore (Push istantaneo delle modifiche)
-    const initFirestoreSync = async () => {
-      try {
-        const { doc, onSnapshot } = await import("firebase/firestore");
-        const { db } = await import("./firebase");
-        const docRef = doc(db, "shares", hashRaw);
-        
-        unsubscribeFirestore = onSnapshot(docRef, (docSnap) => {
-          if (!activeSync) return;
-          if (docSnap.exists()) {
-            const parsedData = docSnap.data();
-            if (parsedData && (parsedData.plants || parsedData.activities)) {
-              // Memorizza lo stato iniziale in sola lettura per considerare tutto come già letto all'inizio
-              captureInitialSeenIds(parsedData.plants || [], parsedData.activities || []);
-              
-              setState(prev => {
-                // Evita di resettare se non ci sono cambiamenti di sostanza
-                if (JSON.stringify(prev.plants) === JSON.stringify(parsedData.plants) &&
-                    JSON.stringify(prev.activities) === JSON.stringify(parsedData.activities) &&
-                    JSON.stringify(prev.smartTrackers) === JSON.stringify(parsedData.smartTrackers)) {
-                  return prev;
-                }
-                return {
-                  plants: parsedData.plants || [],
-                  activities: parsedData.activities || [],
-                  smartTrackers: parsedData.smartTrackers || [],
-                  settings: parsedData.settings || prev.settings
-                };
-              });
-            }
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, `shares/${hashRaw}`);
-        });
-      } catch (e) {
-        console.warn("Firestore sync non supportato, uso polling backup.", e);
-      }
-    };
-    initFirestoreSync();
-
-    // Polling periodico su Express Server (Backup se offline o connessione interrotta)
-    const pollInterval = setInterval(async () => {
-      if (!activeSync) return;
-      try {
-        const res = await fetch(getApiUrl(`/api/shares/${hashRaw}`));
-        if (res.ok) {
-          const parsedData = await res.json();
-          if (parsedData && (parsedData.plants || parsedData.activities)) {
-            // Memorizza lo stato iniziale in sola lettura per considerare tutto come già letto all'inizio
-            captureInitialSeenIds(parsedData.plants || [], parsedData.activities || []);
-
-            setState(prev => {
-              if (JSON.stringify(prev.plants) === JSON.stringify(parsedData.plants) &&
-                  JSON.stringify(prev.activities) === JSON.stringify(parsedData.activities) &&
-                  JSON.stringify(prev.smartTrackers) === JSON.stringify(parsedData.smartTrackers)) {
-                return prev;
-              }
-              return {
-                plants: parsedData.plants || [],
-                activities: parsedData.activities || [],
-                smartTrackers: parsedData.smartTrackers || [],
-                settings: parsedData.settings || prev.settings
-              };
-            });
-          }
-        }
-      } catch (err) {
-        console.warn("Polling backup fallito:", err);
-      }
-    }, 5000);
-
-    return () => {
-      activeSync = false;
-      if (unsubscribeFirestore) unsubscribeFirestore();
-      clearInterval(pollInterval);
-    };
-  }, [isReadOnlyMode]);
-
-  // Caricamento asincrono per link condivisi (ID server o compressi offline)
-  useEffect(() => {
-    if (typeof window !== "undefined" && window.location.hash.startsWith("#sharez=")) {
-      const loadZipShare = async () => {
-        try {
-          const hashRaw = window.location.hash.replace("#sharez=", "");
-
-          // Se l'ID è corto (< 50 caratteri), è memorizzato sul server, su Firestore o sul cloud KV!
-          if (hashRaw.length < 50) {
-            let parsedData = null;
-            
-            // Tentativo 1: Chiediamo al nostro server Express proxy
-            try {
-              const res = await fetch(getApiUrl(`/api/shares/${hashRaw}`));
-              if (res.ok) {
-                parsedData = await res.json();
-              }
-            } catch (serverErr) {
-              console.warn("Nessun dato sul Express server, provo la lettura diretta da Firestore:", serverErr);
-            }
-
-            // Tentativo 2: Lettura diretta da Google Firebase Firestore (perfetto per Vercel serverless/statico)
-            if (!parsedData) {
-              try {
-                const { doc, getDoc } = await import("firebase/firestore");
-                const { db } = await import("./firebase");
-                const docRef = doc(db, "shares", hashRaw);
-                const docSnap = await getDoc(docRef);
-                if (docSnap.exists()) {
-                  parsedData = docSnap.data();
-                }
-              } catch (firestoreErr) {
-                console.warn("Nessun dato su Firestore, procedo col cloud KV:", firestoreErr);
-              }
-            }
-
-            // Tentativo 3: Lettura diretta dal cloud KVDB (per static hosting e Vercel)
-            if (!parsedData) {
-              try {
-                const cloudRes = await fetch(`https://kvdb.io/${hashRaw}/state`);
-                if (cloudRes.ok) {
-                  parsedData = await cloudRes.json();
-                }
-              } catch (cloudErr) {
-                console.error("Errore lettura diretta KVDB cloud:", cloudErr);
-              }
-            }
-
-            if (parsedData && typeof parsedData === "object" && (Array.isArray(parsedData.plants) || parsedData.plants)) {
-              // Memorizza lo stato iniziale in sola lettura per considerare tutto come già letto all'inizio
-              captureInitialSeenIds(parsedData.plants || [], parsedData.activities || []);
-
-              setState({
-                plants: parsedData.plants || [],
-                activities: parsedData.activities || [],
-                smartTrackers: parsedData.smartTrackers || [],
-                settings: parsedData.settings || { userName: "Ospite", gardenName: "Giardino Condiviso", offlineMode: false }
-              });
-              if (parsedData.plants && parsedData.plants.length > 0) {
-                setSelectedPlantId(parsedData.plants[0].id);
-              }
-              showToast("Serra condivisa caricata con successo! 🌿✨");
-              return; // Risolto con successo, termina!
-            }
-          }
-
-          // Fallback decodifica zip locale tradizionale
-          // Decodifica la stringa URL-safe ripristinando i caratteri base64 standard (+ e /)
-          let base64 = decodeURIComponent(hashRaw)
-            .replace(/-/g, "+")
-            .replace(/_/g, "/");
-          // Ripristina l'eventuale padding mancante
-          while (base64.length % 4 !== 0) {
-            base64 += "=";
-          }
-          const zip = new JSZip();
-          const content = await zip.loadAsync(base64, { base64: true });
-          const backupFile = Object.keys(content.files).find(name => name.endsWith(".json"));
-          if (!backupFile) {
-            showToast("Nessun dato valido trovato nel link compresso. ⚠️");
-            return;
-          }
-          const jsonStr = await content.files[backupFile].async("text");
-          const parsed = JSON.parse(jsonStr);
-          if (parsed && typeof parsed === "object" && (Array.isArray(parsed.plants) || parsed.plants)) {
-            setState({
-              plants: parsed.plants || [],
-              activities: parsed.activities || [],
-              smartTrackers: parsed.smartTrackers || [],
-              settings: parsed.settings || { userName: "Ospite", gardenName: "Giardino Condiviso", offlineMode: false }
-            });
-            if (parsed.plants && parsed.plants.length > 0) {
-              setSelectedPlantId(parsed.plants[0].id);
-            }
-            showToast("Serra condivisa caricata e scompattata con successo! 🌿✨");
-          }
-        } catch (e: any) {
-          console.error("Errore decodifica link compresso:", e);
-          showToast("Errore durante il caricamento del link condensato.");
-        }
-      };
-      loadZipShare();
-    }
-  }, []);
+  }, [state, isReadOnlyMode, isCloudLoaded]);
 
   // Filtro piante vive e morte
   const activePlants = state.plants.filter(p => p.isDead !== true);
@@ -1849,8 +1661,6 @@ export default function App() {
 
   // --- CONDIVISIONE LINK COPIA STATO ---
   const handleCopyShareLink = async () => {
-    showToast("Salvataggio dati e ottimizzazione immagini in alta definizione... ⏳");
-
     // Calcola il dominio corretto in modo dinamico per supportare perfettamente Vercel, localhost e Google AI Studio
     const getCanonicalShareBaseUrl = (): string => {
       if (typeof window === "undefined") return "";
@@ -1858,233 +1668,23 @@ export default function App() {
       return `${window.location.protocol}//${window.location.host}${path}`;
     };
 
-    try {
-      // Helper per ottimizzare ma MANTENERE splendide e definite le immagini Base64 (data:)
-      const shrinkBase64 = (base64Str: string): Promise<string> => {
-        return new Promise((resolve) => {
-          if (!base64Str) {
-            resolve("");
-            return;
-          }
-          if (!base64Str.startsWith("data:")) {
-            resolve(base64Str);
-            return;
-          }
-          const img = new Image();
-          img.onload = () => {
-            const maxWidth = 800; // Risoluzione di alta qualità, perfettamente nitida e definita
-            const maxHeight = 800;
-            let width = img.width;
-            let height = img.height;
+    const baseUrl = getCanonicalShareBaseUrl();
+    setGeneratedShareUrl(baseUrl);
+    setIsShareOpen(true);
+    setIsCopiedSuccess(false);
 
-            if (width > height) {
-              if (width > maxWidth) {
-                height = Math.round((height * maxWidth) / width);
-                width = maxWidth;
-              }
-            } else {
-              if (height > maxHeight) {
-                width = Math.round((width * maxHeight) / height);
-                height = maxHeight;
-              }
-            }
-
-            const canvas = document.createElement("canvas");
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext("2d");
-            if (ctx) {
-              ctx.drawImage(img, 0, 0, width, height);
-              // Qualità 0.82: ottiene immagini leggerissime ma nitidissime, degne di una rivista d'arte botanica
-              resolve(canvas.toDataURL("image/jpeg", 0.82));
-            } else {
-              resolve(base64Str);
-            }
-          };
-          img.onerror = () => {
-            resolve(base64Str);
-          };
-          img.src = base64Str; // Avvia il caricamento
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(baseUrl)
+        .then(() => {
+          setIsCopiedSuccess(true);
+          showToast("Link unico del Diario Botanico copiato! 🌿✨");
+        })
+        .catch(() => {
+          setIsCopiedSuccess(false);
+          showToast("Impossibile copiare automaticamente. Puoi copiarlo direttamente dalla barra indirizzi del browser!");
         });
-      };
-
-      // Elabora asincronamente tutte le piante mantenendo l'eccezionale definizione delle foto
-      const sanitizedPlants = await Promise.all(state.plants.map(async p => {
-        const cleanImageUrl = p.imageUrl ? await shrinkBase64(p.imageUrl) : "";
-        // Conserviamo fino agli ultimi 5 diari per una cronologia ricca
-        const sortedDiary = p.diary ? [...p.diary].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) : [];
-        const slicedDiary = sortedDiary.slice(0, 5);
-        const cleanDiary = await Promise.all(slicedDiary.map(async d => ({
-          id: d.id,
-          eventTitle: d.eventTitle,
-          notes: d.notes || "",
-          date: d.date,
-          category: d.category || "generale",
-          imageUrl: d.imageUrl ? await shrinkBase64(d.imageUrl) : "" // Anche le foto dei diari mantengono la qualità!
-        })));
-
-        return {
-          id: p.id,
-          name: p.name,
-          nickname: p.nickname || "",
-          species: p.species || "",
-          origin: p.origin,
-          startDate: p.startDate,
-          description: p.description || "",
-          imageUrl: cleanImageUrl,
-          status: p.status,
-          health: p.health || 100,
-          notes: p.notes || "",
-          tags: p.tags || [],
-          diary: cleanDiary,
-          isDead: p.isDead ? true : undefined,
-          deathNotes: p.deathNotes || undefined,
-          deathDate: p.deathDate || undefined
-        };
-      }));
-
-      const sanitizedActivities = state.activities.map(a => ({
-        id: a.id,
-        plantId: a.plantId,
-        title: a.title,
-        status: a.status,
-        type: a.type,
-        dueDate: a.dueDate,
-        priority: a.priority,
-        completedAt: a.completedAt,
-        completedNotes: a.completedNotes
-      }));
-
-      const sanitizedTrackers = (state.smartTrackers || []).map(t => ({
-        id: t.id,
-        title: t.title,
-        startDate: t.startDate,
-        durationDays: t.durationDays,
-        isCompleted: t.isCompleted,
-        completedAt: t.completedAt,
-        notes: t.notes
-      }));
-
-      const stateString = JSON.stringify({
-        plants: sanitizedPlants,
-        activities: sanitizedActivities,
-        smartTrackers: sanitizedTrackers,
-        settings: state.settings
-      });
-
-      let shareUrl = "";
-      
-      // Tentativo principale: salvataggio sul server per un link ultracorto (ottimizzato e privo di limiti Vercel)
-      try {
-        const response = await fetch(getApiUrl("/api/shares"), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: stateString
-        });
-        if (response.ok) {
-          const resData = await response.json();
-          if (resData && resData.id) {
-            shareUrl = `${getCanonicalShareBaseUrl()}#sharez=${resData.id}`;
-          }
-        }
-      } catch (err) {
-        console.warn("Server-side share non disponibile, provo a salvare direttamente da client su Firestore:", err);
-      }
-
-      // Tentativo 2: Salvataggio diretto nel nostro database cloud Firebase Firestore (perfetto e stabilissimo per Vercel!)
-      if (!shareUrl) {
-        try {
-          const { collection, addDoc } = await import("firebase/firestore");
-          const { db } = await import("./firebase");
-          
-          const firestorePayload = JSON.parse(stateString);
-          firestorePayload.createdAt = new Date().toISOString();
-          
-          const docRef = await addDoc(collection(db, "shares"), firestorePayload);
-          
-          if (docRef.id) {
-            shareUrl = `${getCanonicalShareBaseUrl()}#sharez=${docRef.id}`;
-          }
-        } catch (firestoreErr) {
-          console.error("Errore salvataggio diretto su Firestore:", firestoreErr);
-        }
-      }
-
-      // Tentativo 3: Se Firestore e il server falliscono, salviamo direttamente su KVDB cloud da client
-      if (!shareUrl) {
-        try {
-          const bucketRes = await fetch("https://kvdb.io", { method: "POST" });
-          if (bucketRes.ok) {
-            const bucketId = (await bucketRes.text()).trim();
-            if (bucketId && bucketId.length > 5) {
-              const saveRes = await fetch(`https://kvdb.io/${bucketId}/state`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: stateString
-              });
-              if (saveRes.ok) {
-                shareUrl = `${getCanonicalShareBaseUrl()}#sharez=${bucketId}`;
-              }
-            }
-          }
-        } catch (kvErr) {
-          console.error("Errore salvataggio diretto su KVDB cloud:", kvErr);
-        }
-      }
-
-      // Fallback Estremo: se anche il cloud fallisce, genera un link zip compresso URL-safe locale
-      if (!shareUrl) {
-        const zip = new JSZip();
-        zip.file("fb.json", stateString);
-        const base64Zip = await zip.generateAsync({
-          type: "base64",
-          compression: "DEFLATE",
-          compressionOptions: { level: 9 }
-        });
-
-        const urlSafeBase64 = base64Zip
-          .replace(/\+/g, "-")
-          .replace(/\//g, "_")
-          .replace(/=/g, "");
-
-        shareUrl = `${getCanonicalShareBaseUrl()}#sharez=${urlSafeBase64}`;
-      }
-
-      // Attivazione immediata del sistema di Sincronizzazione Live per l'autore
-      if (shareUrl) {
-        const match = shareUrl.match(/#sharez=([A-Za-z0-9_\-]+)/);
-        if (match && match[1]) {
-          const activeId = match[1];
-          if (activeId.length < 50) {
-            localStorage.setItem("flora_active_share_id", activeId);
-            setActiveShareId(activeId);
-          }
-        }
-      }
-      
-      setGeneratedShareUrl(shareUrl);
-      setIsShareOpen(true);
+    } else {
       setIsCopiedSuccess(false);
-
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(shareUrl)
-          .then(() => {
-            setIsCopiedSuccess(true);
-            showToast("Link corto (con foto in alta definizione) copiato! 🌿✨");
-          })
-          .catch(() => {
-            setIsCopiedSuccess(false);
-            showToast("Link generato! Puoi copiarlo dal pannello.");
-          });
-      } else {
-        setIsCopiedSuccess(false);
-        showToast("Link generato! Copialo manualmente.");
-      }
-    } catch (e) {
-      console.error(e);
-      showToast("Errore durante la codifica del link di condivisione.");
     }
   };
 
@@ -2146,6 +1746,29 @@ export default function App() {
     const matchesTag = selectedTagFilter === "all" || p.tags.includes(selectedTagFilter);
     return matchesSearch && matchesStatus && matchesTag;
   });
+
+  if (!isCloudLoaded) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#fdfdfb] text-[#2d3a27] font-sans">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="flex flex-col items-center gap-4 text-center max-w-sm px-6"
+        >
+          <div className="relative flex items-center justify-center">
+            <div className="w-16 h-16 rounded-full border-4 border-[#e2e2d8] border-t-[#7e8c69] animate-spin"></div>
+            <Sprout className="w-7 h-7 text-[#7e8c69] absolute animate-pulse" />
+          </div>
+          <div className="space-y-1.5 mt-2">
+            <h3 className="font-serif italic text-[#2d3a27] text-lg font-semibold text-stone-800">Connessione alla Serra Cloud...</h3>
+            <p className="text-xs text-stone-500 font-sans leading-relaxed">
+              Sto caricando i dati biologici in tempo reale dal database centralizzato. Un istante di pazienza...
+            </p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col font-sans select-none overflow-x-hidden antialiased text-[#2d3a27] bg-[#f5f5f0] p-4 lg:p-6 gap-6">
@@ -4949,12 +4572,12 @@ export default function App() {
 
               <div className="text-xs text-sage-700 leading-relaxed font-sans space-y-2">
                 <p>
-                  Questo link contiene l'intero stato della tua serra crittografato. Chi lo apre vedrà il tuo archivio in modalità **sola lettura**, con tutte le tue piante, foto e note caricate!
+                  Questo è il link unico del diario botanico cloud. Chiunque apra questo indirizzo vedrà la tua serra in tempo reale in **modalità visualizzatore** (sola lettura), perfettamente aggiornata con i tuoi ultimi diari, piante e foto!
                 </p>
               </div>
 
               <div className="space-y-2">
-                <label className="font-mono text-[10px] text-sage-400 uppercase block select-none">Link della Serra:</label>
+                <label className="font-mono text-[10px] text-sage-400 uppercase block select-none">Link Unico del Diario:</label>
                 <div className="flex flex-col gap-2">
                   <textarea
                     readOnly
