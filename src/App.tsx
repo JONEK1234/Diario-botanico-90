@@ -2931,6 +2931,41 @@ export default function App() {
                   />
                 </div>
 
+                <div className="flex flex-col gap-1.5 pt-2 border-t border-[#e4e8e1]/70">
+                  <label className="font-mono text-[10px] text-[#7e8c69] uppercase font-bold">Ruolo Accesso Dispositivo</label>
+                  <div className="flex bg-[#f5f5f0] p-1 rounded-xl gap-1">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setIsReadOnlyMode(true);
+                        if (typeof window !== "undefined") {
+                          localStorage.setItem("flora_auth_mode", "viewer");
+                        }
+                        showToast("Modalità Sola Lettura (Visualizzatore) Attivata 👁️");
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-semibold text-center transition-all cursor-pointer ${isReadOnlyMode ? "bg-white text-[#2d3a27] shadow-xs" : "text-stone-400 hover:text-stone-600"}`}
+                    >
+                      Visualizzatore 👁️
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setIsReadOnlyMode(false);
+                        if (typeof window !== "undefined") {
+                          localStorage.setItem("flora_auth_mode", "editor");
+                        }
+                        showToast("Modalità Scrittura (Editor) Sbloccata! 🌿✏️");
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-semibold text-center transition-all cursor-pointer ${!isReadOnlyMode ? "bg-[#7e8c69] text-white shadow-xs" : "text-stone-400 hover:text-stone-600"}`}
+                    >
+                      Editor / Proprietario ✏️
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-stone-400 leading-relaxed">
+                    Scegli <strong>Editor</strong> per salvare le modifiche in tempo reale nel Cloud di Firestore; usa <strong>Visualizzatore</strong> per condividere senza rischi.
+                  </p>
+                </div>
+
                 <div className="pt-2 border-t border-[#e4e8e1]/70 space-y-2">
                   <p className="font-mono text-[10px] text-sage-400 uppercase">Importazione Manuale file JSON</p>
                   <input
