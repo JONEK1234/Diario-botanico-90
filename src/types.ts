@@ -82,4 +82,5 @@ export interface JournalState {
     gardenName: string;
     offlineMode: boolean;
   };
+  updatedAt?: string;
 }

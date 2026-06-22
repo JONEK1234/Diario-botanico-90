@@ -520,6 +520,20 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
+  // Aggiorna l'updatedAt locale in memoria ogni volta che l'utente effettua modifiche a piante, attività, tracciatori o impostazioni
+  useEffect(() => {
+    if (!isReadOnlyMode && isCloudLoaded) {
+      const nowStr = new Date().toISOString();
+      setState(prev => {
+        if (prev.updatedAt === nowStr) return prev;
+        return {
+          ...prev,
+          updatedAt: nowStr
+        };
+      });
+    }
+  }, [state.plants, state.activities, state.smartTrackers, state.settings, isReadOnlyMode, isCloudLoaded]);
+
   // Auto-salvataggio nel localStorage
   useEffect(() => {
     if (!isReadOnlyMode && isCloudLoaded) {
@@ -669,7 +683,8 @@ export default function App() {
                     plants: parsedData.plants || [],
                     activities: parsedData.activities || [],
                     smartTrackers: parsedData.smartTrackers || [],
-                    settings: parsedData.settings || prev.settings
+                    settings: parsedData.settings || prev.settings,
+                    updatedAt: parsedData.updatedAt
                   };
                 });
               }
@@ -688,25 +703,44 @@ export default function App() {
             if (docSnap.exists()) {
               const parsedData = docSnap.data();
               if (parsedData && (parsedData.plants || parsedData.activities)) {
-                setState({
-                  plants: parsedData.plants || [],
-                  activities: parsedData.activities || [],
-                  smartTrackers: parsedData.smartTrackers || [],
-                  settings: parsedData.settings || { userName: "Samuel", gardenName: "Orto Botanico di Samuel", offlineMode: false }
-                });
-                if (parsedData.plants && parsedData.plants.length > 0) {
-                  setSelectedPlantId(parsedData.plants[0].id);
+                const cloudUpdatedAt = parsedData.updatedAt || "";
+                
+                // Leggi fresco da localStorage per evitare scope closures obsolete di React
+                let localUpdatedAt = "";
+                try {
+                  const savedRaw = localStorage.getItem("flora_journal_db");
+                  if (savedRaw) {
+                    const parsedSaved = JSON.parse(savedRaw);
+                    localUpdatedAt = parsedSaved.updatedAt || "";
+                  }
+                } catch (_) {}
+
+                if (localUpdatedAt && localUpdatedAt > cloudUpdatedAt) {
+                  console.log("Lo stato locale è PIÙ RECENTE di quello sul Cloud. Conservo ed effettuo sync in salita!");
+                } else {
+                  console.log("Caricamento dello stato aggiornato del Cloud in corso...");
+                  setState({
+                    plants: parsedData.plants || [],
+                    activities: parsedData.activities || [],
+                    smartTrackers: parsedData.smartTrackers || [],
+                    settings: parsedData.settings || { userName: "Samuel", gardenName: "Orto Botanico di Samuel", offlineMode: false },
+                    updatedAt: cloudUpdatedAt
+                  });
+                  if (parsedData.plants && parsedData.plants.length > 0) {
+                    setSelectedPlantId(parsedData.plants[0].id);
+                  }
                 }
               }
             } else {
               // Crea di default se non esiste ancora
               const initialState = getInitialState();
+              const now = new Date().toISOString();
               await setDoc(docRef, {
                 ...initialState,
                 id: "samuel-garden",
-                updatedAt: new Date().toISOString()
+                updatedAt: now
               });
-              setState(initialState);
+              setState({ ...initialState, updatedAt: now });
             }
           } catch (getErr) {
             console.error("Errore lettura iniziale Editor:", getErr);
@@ -724,6 +758,7 @@ export default function App() {
       }
     };
 
+    setIsCloudLoaded(false); // Resetta isCloudLoaded per evitare conflitti o salvataggi asincroni durante il cambio di stato della connessione!
     initCloudSync();
 
     return () => {
@@ -751,7 +786,7 @@ export default function App() {
           activities: state.activities,
           smartTrackers: state.smartTrackers || [],
           settings: state.settings,
-          updatedAt: new Date().toISOString()
+          updatedAt: state.updatedAt || new Date().toISOString()
         };
 
         // Salva direttamente su Firestore
@@ -1704,7 +1739,7 @@ export default function App() {
             activities: state.activities,
             smartTrackers: state.smartTrackers || [],
             settings: state.settings,
-            updatedAt: new Date().toISOString()
+            updatedAt: state.updatedAt || new Date().toISOString()
           };
           await setDoc(docRef, payload, { merge: true });
           showToast("Salvataggio sincronizzato completato! ✨");
