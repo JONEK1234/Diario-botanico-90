@@ -120,8 +120,8 @@ const compressStateImages = async (stateToSave: JournalState): Promise<JournalSt
   const compressedPlants = await Promise.all(
     stateToSave.plants.map(async (plant) => {
       let compressedImg = plant.imageUrl;
-      // Comprime solo se è una stringa base64 lunga superiore a 20KB
-      if (plant.imageUrl && plant.imageUrl.startsWith("data:image/") && plant.imageUrl.length > 20000) {
+      // Comprime solo se è una stringa base64 lunga superiore a 67KB (~50KB binari)
+      if (plant.imageUrl && plant.imageUrl.startsWith("data:image/") && plant.imageUrl.length > 67000) {
         try {
           compressedImg = await compressImage(plant.imageUrl, 500, 0.4);
         } catch (_) {}
@@ -132,7 +132,7 @@ const compressStateImages = async (stateToSave: JournalState): Promise<JournalSt
         compressedDiary = await Promise.all(
           plant.diary.map(async (entry) => {
             let entryImg = entry.imageUrl;
-            if (entry.imageUrl && entry.imageUrl.startsWith("data:image/") && entry.imageUrl.length > 20000) {
+            if (entry.imageUrl && entry.imageUrl.startsWith("data:image/") && entry.imageUrl.length > 67000) {
               try {
                 entryImg = await compressImage(entry.imageUrl, 500, 0.4);
               } catch (_) {}
@@ -154,6 +154,12 @@ const compressStateImages = async (stateToSave: JournalState): Promise<JournalSt
     ...stateToSave,
     plants: compressedPlants,
   };
+};
+
+// Rimuove ricorsivamente le chiavi "undefined" prevenendo fallimenti della setDoc in Firestore
+const sanitizeFirestorePayload = (obj: any): any => {
+  if (obj === undefined) return null;
+  return JSON.parse(JSON.stringify(obj));
 };
 
 export default function App() {
@@ -840,11 +846,11 @@ export default function App() {
               // Crea di default se non esiste ancora
               const initialState = getInitialState();
               const now = new Date().toISOString();
-              await setDoc(docRef, {
+              await setDoc(docRef, sanitizeFirestorePayload({
                 ...initialState,
                 id: "samuel-garden",
                 updatedAt: now
-              });
+              }));
               setState({ ...initialState, updatedAt: now });
             }
           } catch (getErr) {
@@ -885,17 +891,26 @@ export default function App() {
         const { db } = await import("./firebase");
 
         const docRef = doc(db, "shares", "samuel-garden");
+
+        // Prima compattiamo ricorsivamente le immagini
+        const compressedState = await compressStateImages(state);
+        
+        // Se si è verificata una compressione di immagini nuove pesanti, allineiamo lo stato React locale
+        if (JSON.stringify(compressedState.plants) !== JSON.stringify(state.plants)) {
+          setState(compressedState);
+        }
+
         const payload = {
           id: "samuel-garden",
-          plants: state.plants,
-          activities: state.activities,
-          smartTrackers: state.smartTrackers || [],
-          settings: state.settings,
+          plants: compressedState.plants,
+          activities: compressedState.activities,
+          smartTrackers: compressedState.smartTrackers || [],
+          settings: compressedState.settings,
           updatedAt: state.updatedAt || new Date().toISOString()
         };
 
-        // Salva direttamente su Firestore
-        await setDoc(docRef, payload, { merge: true });
+        // Salva direttamente su Firestore, igienizzato contro chiavi undefined
+        await setDoc(docRef, sanitizeFirestorePayload(payload), { merge: true });
         console.log("Diario centralizzato salvato perfettamente sul cloud (Firestore)!");
       } catch (err) {
         console.error("Errore salvataggio automatico sul cloud:", err);
@@ -904,6 +919,25 @@ export default function App() {
 
     return () => clearTimeout(timer);
   }, [state, isReadOnlyMode, isCloudLoaded]);
+
+  // Compressione automatica in background all'avvio per sanare vecchi dati pesanti presenti nel localStorage
+  useEffect(() => {
+    if (!isCloudLoaded || isReadOnlyMode) return;
+    const runDeferredCompression = async () => {
+      try {
+        const compressed = await compressStateImages(state);
+        if (JSON.stringify(compressed.plants) !== JSON.stringify(state.plants)) {
+          console.log("Compressione automatica iniziale di recupero eseguita su vecchi dati pesanti!");
+          setState(compressed);
+        }
+      } catch (e) {
+        console.error("Errore compressione iniziale background:", e);
+      }
+    };
+    // Esegui con un soffio di ritardo per non bloccare l'interfaccia
+    const t = setTimeout(runDeferredCompression, 1000);
+    return () => clearTimeout(t);
+  }, [isCloudLoaded, isReadOnlyMode]);
 
   // Filtro piante vive e morte
   const activePlants = state.plants.filter(p => p.isDead !== true);
@@ -1912,7 +1946,7 @@ export default function App() {
         updatedAt: nowStr
       };
 
-      await setDoc(docRef, payload, { merge: true });
+      await setDoc(docRef, sanitizeFirestorePayload(payload), { merge: true });
       
       // Aggiorna anche l'updatedAt dello stato per evitare auto-scaricamenti conflittuali
       setState(prev => ({ ...prev, updatedAt: nowStr }));
@@ -1957,7 +1991,7 @@ export default function App() {
           updatedAt: nowStr
         };
 
-        await setDoc(docRef, payload, { merge: true });
+        await setDoc(docRef, sanitizeFirestorePayload(payload), { merge: true });
         
         // Sincronizza updatedAt locale in memoria
         setState(prev => ({ ...prev, updatedAt: nowStr }));
@@ -1995,7 +2029,7 @@ export default function App() {
             settings: state.settings,
             updatedAt: state.updatedAt || new Date().toISOString()
           };
-          await setDoc(docRef, payload, { merge: true });
+          await setDoc(docRef, sanitizeFirestorePayload(payload), { merge: true });
           showToast("Salvataggio sincronizzato completato! ✨");
         } catch (saveErr) {
           console.error("Errore salvataggio di transizione:", saveErr);
