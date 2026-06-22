@@ -54,8 +54,16 @@ const getApiUrl = (endpoint: string): string => {
 };
 
 export default function App() {
-  // Modalità Sola Lettura per link condivisi (#share= o #sharez=)
-  const isReadOnlyMode = typeof window !== "undefined" && (window.location.hash.includes("share=") || window.location.hash.includes("sharez="));
+  // Modalità Sola Lettura gestita dinamicamente per supportare il single-app editor/viewer toggle!
+  const [isReadOnlyMode, setIsReadOnlyMode] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const savedMode = localStorage.getItem("flora_auth_mode");
+      if (savedMode === "editor") {
+        return false;
+      }
+    }
+    return true; // Di default parte in modalità visualizzatore (Sola Lettura)
+  });
 
   // 1. CARICAMENTO STATO INIZIALE (Supporto Standalone Offline ed State Management locale)
   const getInitialState = (): JournalState => {
@@ -237,6 +245,7 @@ export default function App() {
     return "samuel-garden";
   });
   const [isCloudLoaded, setIsCloudLoaded] = useState(false);
+  const [syncClicks, setSyncClicks] = useState(0);
 
   enum OperationType {
     CREATE = 'create',
@@ -756,15 +765,17 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [state, activeShareId, isReadOnlyMode, isCloudLoaded]);
 
-  // C. Viewer Realtime Sync: Riceve e aggiorna in tempo reale la serra visualizzata tramite link condiviso
+  // C. Viewer Realtime Sync: Riceve e aggiorna in tempo reale la serra visualizzata tramite link o id predefinito
   useEffect(() => {
     if (!isReadOnlyMode) return;
-    let hashRaw = "";
+    let hashRaw = "samuel-garden";
     if (typeof window !== "undefined") {
       if (window.location.hash.startsWith("#sharez=")) {
         hashRaw = window.location.hash.replace("#sharez=", "");
       } else if (window.location.hash.startsWith("#share=")) {
         hashRaw = window.location.hash.replace("#share=", "");
+      } else if (activeShareId) {
+        hashRaw = activeShareId;
       }
     }
     if (!hashRaw || hashRaw.length >= 50) return;
@@ -2086,6 +2097,25 @@ export default function App() {
     }
   };
 
+  // Gestione del click 5 volte per sbloccare o bloccare la modalità Editor/Visualizzatore
+  const handleSyncPillClick = () => {
+    setSyncClicks(prev => {
+      const nextClicks = prev + 1;
+      if (nextClicks >= 5) {
+        const nextReadOnly = !isReadOnlyMode;
+        setIsReadOnlyMode(nextReadOnly);
+        if (typeof window !== "undefined") {
+          localStorage.setItem("flora_auth_mode", nextReadOnly ? "viewer" : "editor");
+        }
+        showToast(nextReadOnly ? "Modalità Visualizzatore Attivata 👁️ (Sola Lettura)" : "Modalità Editor Attivata! 🌿✏️");
+        return 0; // reset
+      } else {
+        showToast(`Clicca altre ${5 - nextClicks} volte per cambiare modalità! ⚙️`);
+        return nextClicks;
+      }
+    });
+  };
+
   // Tag helper
   const handleAddTag = () => {
     if (draftTag.trim() && !newPlantForm.tags?.includes(draftTag.trim())) {
@@ -2363,14 +2393,22 @@ export default function App() {
         <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
           {/* Sistema Sincronizzato Live pill */}
           {isReadOnlyMode ? (
-            <div className="bg-[#7e8c69] text-white px-4 py-2.5 rounded-full text-[11px] font-semibold flex items-center gap-2 shadow-sm shrink-0">
-              <div className="w-1.5 h-1.5 bg-[#4ade80] rounded-full animate-pulse shrink-0"></div>
-              <span>Sistema Sincronizzato Live</span>
+            <div 
+              onClick={handleSyncPillClick}
+              className="bg-[#5a5a40]/90 text-white px-4 py-2.5 rounded-full text-[11px] font-semibold flex items-center gap-2 shadow-sm shrink-0 cursor-pointer select-none hover:bg-[#5a5a40] active:scale-95 transition-all"
+              title="Clicca 5 volte per sbloccare la modalità Editor"
+            >
+              <div className="w-1.5 h-1.5 bg-[#38bdf8] rounded-full animate-pulse shrink-0"></div>
+              <span>Sincronizzato (Lettura) 👁️</span>
             </div>
           ) : (
-            <div className="bg-[#7e8c69] text-white px-4 py-2.5 rounded-full text-[11px] font-semibold flex items-center gap-2 shadow-sm shrink-0">
+            <div 
+              onClick={handleSyncPillClick}
+              className="bg-[#7e8c69] hover:bg-[#90a48a] text-white px-4 py-2.5 rounded-full text-[11px] font-semibold flex items-center gap-2 shadow-sm shrink-0 cursor-pointer select-none ring-2 ring-emerald-500/20 active:scale-95 transition-all"
+              title="Clicca 5 volte per tornare in modalità Visualizzatore"
+            >
               <div className="w-1.5 h-1.5 bg-[#4ade80] rounded-full animate-pulse shrink-0"></div>
-              <span>Sistema Sincronizzato Live</span>
+              <span>Sincronizzato (Editor) ✨⚙️</span>
             </div>
           )}
 
