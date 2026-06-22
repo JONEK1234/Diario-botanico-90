@@ -171,23 +171,10 @@ export default function App() {
   };
 
   const [state, setState] = useState<JournalState>(() => {
-    if (isReadOnlyMode) {
-      return {
-        plants: [],
-        activities: [],
-        smartTrackers: [],
-        settings: {
-          userName: "Ospite",
-          gardenName: "Giardino Condiviso",
-          offlineMode: false,
-        }
-      };
-    }
     return getInitialState();
   });
 
   const [selectedPlantId, setSelectedPlantId] = useState<string>(() => {
-    if (isReadOnlyMode) return "";
     const savedId = typeof window !== "undefined" ? localStorage.getItem("flora_selected_plant_id") : null;
     const initialDb = getInitialState();
     if (savedId && initialDb.plants.some(p => p.id === savedId)) {
@@ -1698,22 +1685,43 @@ export default function App() {
   };
 
   // Gestione del click 5 volte per sbloccare o bloccare la modalità Editor/Visualizzatore
-  const handleSyncPillClick = () => {
-    setSyncClicks(prev => {
-      const nextClicks = prev + 1;
-      if (nextClicks >= 5) {
-        const nextReadOnly = !isReadOnlyMode;
-        setIsReadOnlyMode(nextReadOnly);
-        if (typeof window !== "undefined") {
-          localStorage.setItem("flora_auth_mode", nextReadOnly ? "viewer" : "editor");
+  const handleSyncPillClick = async () => {
+    const nextClicks = syncClicks + 1;
+    if (nextClicks >= 5) {
+      setSyncClicks(0); // reset
+      const nextReadOnly = !isReadOnlyMode;
+
+      // Se stiamo passando da EDITOR a VISUALIZZATORE, salviamo IMMEDIATAMENTE per sicurezza per non perdere nulla
+      if (nextReadOnly) {
+        showToast("Salvataggio e consolidamento finale sul cloud... ⏳🌿");
+        try {
+          const { doc, setDoc } = await import("firebase/firestore");
+          const { db } = await import("./firebase");
+          const docRef = doc(db, "shares", "samuel-garden");
+          const payload = {
+            id: "samuel-garden",
+            plants: state.plants,
+            activities: state.activities,
+            smartTrackers: state.smartTrackers || [],
+            settings: state.settings,
+            updatedAt: new Date().toISOString()
+          };
+          await setDoc(docRef, payload, { merge: true });
+          showToast("Salvataggio sincronizzato completato! ✨");
+        } catch (saveErr) {
+          console.error("Errore salvataggio di transizione:", saveErr);
         }
-        showToast(nextReadOnly ? "Modalità Visualizzatore Attivata 👁️ (Sola Lettura)" : "Modalità Editor Attivata! 🌿✏️");
-        return 0; // reset
-      } else {
-        showToast(`Clicca altre ${5 - nextClicks} volte per cambiare modalità! ⚙️`);
-        return nextClicks;
       }
-    });
+
+      setIsReadOnlyMode(nextReadOnly);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("flora_auth_mode", nextReadOnly ? "viewer" : "editor");
+      }
+      showToast(nextReadOnly ? "Modalità Visualizzatore Attivata 👁️ (Sola Lettura)" : "Modalità Editor Attivata! 🌿✏️");
+    } else {
+      setSyncClicks(nextClicks);
+      showToast(`Clicca altre ${5 - nextClicks} volte per cambiare modalità! ⚙️`);
+    }
   };
 
   // Tag helper
