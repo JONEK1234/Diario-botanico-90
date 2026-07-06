@@ -37,9 +37,11 @@ import {
   Skull,
   HeartOff,
   ArrowLeft,
-  History
+  History,
+  Image as ImageIcon
 } from "lucide-react";
-import { JournalState, Plant, CareActivity, PlantStatus, PlantOrigin, DiaryEntry, SmartTracker } from "./types";
+import { JournalState, Plant, CareActivity, PlantStatus, PlantOrigin, DiaryEntry, SmartTracker, SavedNote } from "./types";
+import { SavedNotesView } from "./components/SavedNotesView";
 import { PRESET_PLANTS, PRESET_ACTIVITIES } from "./data/presetPlants";
 import JSZip from "jszip";
 
@@ -633,6 +635,9 @@ export default function App() {
   // Stato per la gestione della pressione prolungata sulle piante (Long Press)
   const [longPressedPlant, setLongPressedPlant] = useState<Plant | null>(null);
 
+  // Stato per l'apertura del sottomenu delle "Note Salvate" per la pianta selezionata
+  const [isSavedNotesViewOpen, setIsSavedNotesViewOpen] = useState(false);
+
   // Stato per l'editing di elementi
   const [editingItem, setEditingItem] = useState<{
     id: string;
@@ -690,6 +695,8 @@ export default function App() {
     if (selectedPlantId && !isReadOnlyMode) {
       localStorage.setItem("flora_selected_plant_id", selectedPlantId);
     }
+    // Chiudi la schermata Note Salvate quando l'utente cambia pianta selezionata
+    setIsSavedNotesViewOpen(false);
   }, [selectedPlantId, isReadOnlyMode]);
 
   // Salvataggio automatico dei dati parziali dei form per evitare perdite se l'utente esce dall'app
@@ -1199,12 +1206,19 @@ export default function App() {
       id: "diary-copy-" + Math.random().toString(36).substr(2, 9) + "-" + Date.now()
     }));
 
+    // Duplica le note salvate con nuovi ID univoci
+    const duplicatedSavedNotes = (originalPlant.savedNotes || []).map(note => ({
+      ...note,
+      id: "note-copy-" + Math.random().toString(36).substr(2, 9) + "-" + Date.now()
+    }));
+
     // Costruisce la pianta duplicata
     const duplicatedPlant: Plant = {
       ...originalPlant,
       id: newPlantId,
       nickname: newNickname,
       diary: duplicatedDiary,
+      savedNotes: duplicatedSavedNotes,
       startDate: originalPlant.startDate || new Date().toISOString().split("T")[0]
     };
 
@@ -2946,9 +2960,31 @@ export default function App() {
         {/* COLONNA CENTRALE DETAIL: spans 6 */}
         <div className="lg:col-span-6 flex flex-col gap-6" ref={detailsSectionRef}>
           {selectedPlant ? (
-            <>
-              {/* STILE EDITORIALE BENTO DETAIL */}
-              <div className="bento-card overflow-hidden bg-white">
+            isSavedNotesViewOpen ? (
+              <SavedNotesView
+                plant={selectedPlant}
+                onBack={() => setIsSavedNotesViewOpen(false)}
+                onUpdateNotes={(plantId, updatedNotes) => {
+                  setState(prev => ({
+                    ...prev,
+                    plants: prev.plants.map(p => {
+                      if (p.id === plantId) {
+                        return {
+                          ...p,
+                          savedNotes: updatedNotes
+                        };
+                      }
+                      return p;
+                    })
+                  }));
+                }}
+                isReadOnlyMode={isReadOnlyMode}
+                showToast={showToast}
+              />
+            ) : (
+              <>
+                {/* STILE EDITORIALE BENTO DETAIL */}
+                <div className="bento-card overflow-hidden bg-white">
                 <div className="flex flex-col md:flex-row">
                   {/* Image Grid Frame resembling garden bento item */}
                   <div className="md:w-5/12 h-64 md:h-auto overflow-hidden relative min-h-[280px] bg-sage-50 border-r border-[#e2e2d8] cursor-zoom-in" onClick={() => setFullscreenImageUrl(selectedPlant.imageUrl)} title="Clicca per visualizzare a schermo intero">
@@ -3010,6 +3046,14 @@ export default function App() {
                               title="Rimuovi pianta permanentemente"
                             >
                               <Trash2 className="w-3" /> Elimina Pianta
+                            </button>
+
+                            <button
+                              onClick={() => setIsSavedNotesViewOpen(true)}
+                              className="p-1 px-2.5 bg-[#4c5938] hover:bg-[#2d3a27] text-white rounded-lg text-[10px] font-semibold transition-all flex items-center gap-1 cursor-pointer border border-[#4c5938] shadow-sm active:scale-95"
+                              title="Note Salvate della pianta (istruzioni di cura, bisogni e consigli)"
+                            >
+                              <BookOpen className="w-3" /> Note Salvate
                             </button>
                           </div>
                         )}
@@ -3078,46 +3122,44 @@ export default function App() {
                 </div>
               </div>
 
-              {/* CURATOR AI PIECE: bento format */}
-              <div className="bento-card p-6 bg-gradient-to-tr from-[#f5f5f0] to-white space-y-4">
+              {/* SAVED NOTES PIECE: replacing AI curator */}
+              <div 
+                onClick={() => setIsSavedNotesViewOpen(true)}
+                className="bento-card p-6 bg-white hover:border-[#7e8c69] transition-all cursor-pointer space-y-4 group"
+              >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-[#7e8c69]" />
-                    <h3 className="font-serif italic text-sage-900 text-sm font-bold">Lettura del Curatore Botanico AI</h3>
+                    <BookOpen className="w-4 h-4 text-[#7e8c69]" />
+                    <h3 className="font-serif italic text-[#2d3a27] text-sm font-bold">Note Salvate</h3>
                   </div>
-                  <button
-                    onClick={requestAiReview}
-                    disabled={isAiLoading}
-                    className="p-1 px-4 bg-[#2d3a27] hover:bg-[#2d3a27]/90 rounded-full text-xs font-bold text-white transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                  >
-                    {isAiLoading ? (
-                      <>
-                        <RefreshCcw className="w-3 animate-spin" /> In ascolto...
-                      </>
-                    ) : (
-                      <>
-                        <Activity className="w-3" /> Genera Osservazioni
-                      </>
-                    )}
-                  </button>
+                  <span className="text-[10px] font-mono uppercase bg-[#f5f5f0] text-sage-700 px-2.5 py-1 rounded-full group-hover:bg-[#7e8c69] group-hover:text-white transition-colors">
+                    Apri Archivio
+                  </span>
                 </div>
 
-                {aiAnalysis ? (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.99 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="p-4 bg-white border border-[#e2e2d8] rounded-2xl text-[12px] text-sage-800 leading-relaxed font-serif italic"
-                  >
-                    <p className="whitespace-pre-wrap">"{aiAnalysis}"</p>
-                    <div className="flex items-center justify-between mt-3 pt-2 text-[9px] font-mono text-sage-400 border-t border-[#f0f0e8]">
-                      <span>Analisi eseguita in tempo reale</span>
-                      <span>Google Gemini 3.5 Flash</span>
+                {selectedPlant.savedNotes && selectedPlant.savedNotes.length > 0 ? (
+                  <div className="flex items-center gap-4 bg-[#fbfbf9] p-4 rounded-2xl border border-[#e2e2d8] group-hover:border-sage-300 transition-all">
+                    <div className="w-12 h-12 bg-[#7e8c69]/10 rounded-xl flex items-center justify-center text-[#7e8c69] shrink-0 font-serif text-lg font-black">
+                      {selectedPlant.savedNotes.length}
                     </div>
-                  </motion.div>
+                    <div>
+                      <p className="text-xs font-serif font-bold text-[#2d3a27]">
+                        {selectedPlant.savedNotes.length === 1 ? "1 Nota Salvata" : `${selectedPlant.savedNotes.length} Note Salvate`}
+                      </p>
+                      <p className="text-[11px] text-sage-500">
+                        Clicca per leggerle a schermo intero, modificarle o aggiungerne di nuove.
+                      </p>
+                    </div>
+                  </div>
                 ) : (
-                  <p className="text-xs text-sage-500 font-serif italic pl-1">
-                    Chiedi al Curatore Botanico di meditare sullo stato evolutivo della tua pianta per ricevere preziose riflessioni e dettagli di cura.
-                  </p>
+                  <div className="bg-[#fbfbf9] p-4 rounded-2xl border border-dashed border-sage-300 text-center space-y-2 group-hover:border-sage-400 transition-all">
+                    <p className="text-xs text-sage-500 font-serif italic">
+                      Nessuna nota salvata per questa pianta.
+                    </p>
+                    <p className="text-[10px] text-sage-400">
+                      Clicca qui per aggiungere promemoria, istruzioni, annaffiature particolari e foto.
+                    </p>
+                  </div>
                 )}
               </div>
 
@@ -3221,7 +3263,8 @@ export default function App() {
                   })}
                 </div>
               </div>
-            </>
+              </>
+            )
           ) : (
             <div className="bento-card flex items-center justify-center p-12 text-center text-sage-400 min-h-[400px]">
               <div>

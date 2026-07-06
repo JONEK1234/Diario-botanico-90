@@ -31,6 +31,15 @@ export interface DiaryEntry {
   category?: "creazione" | "annaffiatura" | "concimazione" | "rinvaso" | "generale" | "osservazione" | "evoluzione";
 }
 
+export interface SavedNote {
+  id: string;
+  title: string;
+  description: string;
+  coverImage?: string;
+  images?: string[];
+  createdAt: string;
+}
+
 export interface Plant {
   id: string;
   name: string;
@@ -48,6 +57,7 @@ export interface Plant {
   isDead?: boolean;
   deathDate?: string;
   deathNotes?: string;
+  savedNotes?: SavedNote[];
 }
 
 export interface CareActivity {
