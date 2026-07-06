@@ -618,7 +618,9 @@ export default function App() {
 
   // Gestione Drop Zone per caricaricamento immagini
   const [isDragging, setIsDragging] = useState(false);
+  const [isDraggingEdit, setIsDraggingEdit] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileEditInputRef = useRef<HTMLInputElement>(null);
 
   // Stato per la gestione della cancellazione di elementi tramite pressione prolungata (Long Press)
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<{
@@ -627,6 +629,9 @@ export default function App() {
     type: "activity" | "diary" | "completed-activity";
     title: string;
   } | null>(null);
+
+  // Stato per la gestione della pressione prolungata sulle piante (Long Press)
+  const [longPressedPlant, setLongPressedPlant] = useState<Plant | null>(null);
 
   // Stato per l'editing di elementi
   const [editingItem, setEditingItem] = useState<{
@@ -1020,6 +1025,31 @@ export default function App() {
     }
   };
 
+  const handleEditFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files[0]) {
+      processFile(files[0]);
+    }
+  };
+
+  const handleEditDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingEdit(true);
+  };
+
+  const handleEditDragLeave = () => {
+    setIsDraggingEdit(false);
+  };
+
+  const handleEditDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingEdit(false);
+    const files = e.dataTransfer.files;
+    if (files && files[0]) {
+      processFile(files[0]);
+    }
+  };
+
   // --- OPERAZIONI DI STATO PER PIANTE ---
   const handleCreatePlant = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1110,6 +1140,90 @@ export default function App() {
 
     setIsEditPlantOpen(false);
     showToast(`Aggiornato ${selectedPlant.nickname} nel diario core.`);
+  };
+
+  const handleEditPlantAndStoricize = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPlant) return;
+
+    const ageDays = calculateAge(newPlantForm.startDate || new Date().toISOString().split("T")[0]);
+    const summaryNotes = `Dati storicizzati al ${new Date().toLocaleDateString("it-IT")}:\n• Salute: ${newPlantForm.health ?? selectedPlant.health}%\n• Stato: ${newPlantForm.status ?? selectedPlant.status}\n• Età: ${ageDays} giorni\n• Descrizione: ${newPlantForm.description || "Nessuna descrizione."}\n• Origine: ${newPlantForm.origin || selectedPlant.origin}`;
+
+    const snapEntry: DiaryEntry = {
+      id: "diary-snap-" + Date.now(),
+      date: new Date().toISOString(),
+      eventTitle: `Memoria Storica: ${newPlantForm.nickname || selectedPlant.nickname}`,
+      notes: summaryNotes,
+      imageUrl: newPlantForm.imageUrl || selectedPlant.imageUrl,
+      category: "evoluzione"
+    };
+
+    setState(prev => ({
+      ...prev,
+      plants: prev.plants.map(p => {
+        if (p.id === selectedPlant.id) {
+          return {
+            ...p,
+            name: newPlantForm.name || p.name,
+            nickname: newPlantForm.nickname || p.nickname,
+            species: newPlantForm.species || p.species,
+            origin: newPlantForm.origin || p.origin,
+            startDate: newPlantForm.startDate || p.startDate,
+            description: newPlantForm.description || p.description,
+            imageUrl: newPlantForm.imageUrl || p.imageUrl,
+            status: newPlantForm.status || p.status,
+            health: newPlantForm.health ?? p.health,
+            notes: newPlantForm.notes || p.notes,
+            tags: newPlantForm.tags || p.tags,
+            diary: [snapEntry, ...(p.diary || [])]
+          };
+        }
+        return p;
+      })
+    }));
+
+    setIsEditPlantOpen(false);
+    showToast(`Aggiornato ${selectedPlant.nickname} e registrata una nuova tappa storica con successo! 📜🌿`);
+  };
+
+  const handleDuplicatePlant = (plantId: string) => {
+    const originalPlant = state.plants.find(p => p.id === plantId);
+    if (!originalPlant) return;
+
+    const newPlantId = "plant-copy-" + Date.now();
+    const newNickname = `${originalPlant.nickname} (Copia)`;
+    
+    // Duplica le note del diario con nuovi ID univoci
+    const duplicatedDiary = (originalPlant.diary || []).map(entry => ({
+      ...entry,
+      id: "diary-copy-" + Math.random().toString(36).substr(2, 9) + "-" + Date.now()
+    }));
+
+    // Costruisce la pianta duplicata
+    const duplicatedPlant: Plant = {
+      ...originalPlant,
+      id: newPlantId,
+      nickname: newNickname,
+      diary: duplicatedDiary,
+      startDate: originalPlant.startDate || new Date().toISOString().split("T")[0]
+    };
+
+    // Trova e duplica le attività collegate nell'agenda
+    const originalActivities = state.activities.filter(a => a.plantId === plantId);
+    const duplicatedActivities = originalActivities.map(act => ({
+      ...act,
+      id: "activity-copy-" + Math.random().toString(36).substr(2, 9) + "-" + Date.now(),
+      plantId: newPlantId
+    }));
+
+    setState(prev => ({
+      ...prev,
+      plants: [duplicatedPlant, ...prev.plants],
+      activities: [...prev.activities, ...duplicatedActivities]
+    }));
+
+    setSelectedPlantId(newPlantId);
+    showToast(`Pianta "${originalPlant.nickname}" copiata con successo come "${newNickname}" con tutte le note e compiti! 🌿✨`);
   };
 
   const handleOpenEdit = () => {
@@ -1514,6 +1628,26 @@ export default function App() {
         navigator.vibrate(40); // Piccolo feedback aptico sui dispositivi mobili supportati
       }
       setDeleteConfirmItem({ id, type, title, parentPlantId });
+    }, 700);
+  };
+
+  const handlePlantLongPressStart = (
+    e: React.MouseEvent | React.TouchEvent,
+    plant: Plant
+  ) => {
+    if (isReadOnlyMode) return;
+    isLongPressActive.current = false;
+
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressActive.current = true;
+      if (typeof navigator !== "undefined" && navigator.vibrate) {
+        navigator.vibrate(40);
+      }
+      setLongPressedPlant(plant);
     }, 700);
   };
 
@@ -2730,13 +2864,19 @@ export default function App() {
                 return (
                   <motion.div
                     key={p.id}
-                    onClick={() => {
+                    onMouseDown={(e) => handlePlantLongPressStart(e, p)}
+                    onTouchStart={(e) => handlePlantLongPressStart(e, p)}
+                    onMouseUp={handleLongPressEnd}
+                    onTouchEnd={handleLongPressEnd}
+                    onMouseLeave={handleLongPressEnd}
+                    onClick={(e) => handleElementClick(e, () => {
                       setSelectedPlantId(p.id);
                       setTimeout(() => {
                         detailsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                       }, 50);
-                    }}
+                    })}
                     whileHover={{ scale: 1.01 }}
+                    title="Tieni premuto per Modificare o Eliminare questa pianta"
                     className={`p-3 rounded-2xl border cursor-pointer transition-all flex gap-3 relative overflow-hidden ${
                       isSelected
                         ? "bg-[#fafafa] border-[#7e8c69] shadow-sm"
@@ -2835,6 +2975,14 @@ export default function App() {
                               <Edit className="w-3" /> Modifica
                             </button>
 
+                            <button
+                              onClick={() => handleDuplicatePlant(selectedPlant.id)}
+                              className="p-1 px-2.5 bg-[#f5f5f0] border border-[#e2e2d8] hover:bg-white rounded-lg text-sage-800 text-[10px] font-semibold transition-all flex items-center gap-1 cursor-pointer"
+                              title="Copia questa pianta duplicandone tutte le sue note, l'agenda e i doveri"
+                            >
+                              <Copy className="w-3" /> Copia
+                            </button>
+
                             {selectedPlant.isDead ? (
                               <button
                                 onClick={() => handleRevivePlant(selectedPlant.id)}
@@ -2858,10 +3006,10 @@ export default function App() {
 
                             <button
                               onClick={() => handleDeletePlant(selectedPlant.id)}
-                              className="p-1 px-1.5 bg-red-50 hover:bg-red-100 rounded-lg text-red-600 transition-all cursor-pointer"
-                              title="Rimuovi"
+                              className="p-1 px-2.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[10px] font-semibold transition-all flex items-center gap-1 cursor-pointer border border-red-700 shadow-sm active:scale-95"
+                              title="Rimuovi pianta permanentemente"
                             >
-                              <Trash2 className="w-3" />
+                              <Trash2 className="w-3" /> Elimina Pianta
                             </button>
                           </div>
                         )}
@@ -3243,43 +3391,57 @@ export default function App() {
 
           {/* STORICO RECENTE - MEMORIA STORICA COMPIUTA */}
           <div className="bento-card p-5 bg-white space-y-3">
-            <h4 className="text-xs font-mono uppercase tracking-widest text-[#8e9299] font-bold">Memoria Storica Compiuta</h4>
+            <h4 className="text-xs font-mono uppercase tracking-widest text-[#8e9299] font-bold">
+              Memoria Storica Compiuta {selectedPlant ? ` di ${selectedPlant.nickname}` : ""}
+            </h4>
             <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1 flex flex-col gap-1">
-              {state.activities.filter(a => a.status === "completed").slice(0, 3).map(a => (
-                <div 
-                  key={a.id} 
-                  title={isReadOnlyMode ? "Cronologia in sola lettura" : "Tieni premuto per eliminare permanentemente"}
-                  onMouseDown={(e) => handleLongPressStart(e, a.id, "completed-activity", a.title)}
-                  onTouchStart={(e) => handleLongPressStart(e, a.id, "completed-activity", a.title)}
-                  onMouseUp={handleLongPressEnd}
-                  onTouchEnd={handleLongPressEnd}
-                  onMouseLeave={handleLongPressEnd}
-                  onClick={(e) => handleElementClick(e, () => {
-                    showToast("Tieni premuto su questa faccenda chiusa per rimuoverla dallo storico biologico. 🏷️");
-                  })}
-                  className="p-3 bg-[#fafafa] hover:bg-red-50/10 hover:border-red-100 active:scale-[0.98] select-none transition-all cursor-pointer rounded-xl border border-[#e2e2d8] text-[10px] text-sage-600 space-y-1"
-                >
-                  <div className="flex items-center justify-between gap-1.5 text-[#2d3a27] font-semibold uppercase text-[9px]">
-                    <div className="flex items-center gap-1">
-                      <CheckSquare className="w-3 h-3 text-[#7e8c69] flex-shrink-0" />
-                      <span>{a.title}</span>
+              {(() => {
+                const completedList = state.activities.filter(a => a.status === "completed" && (!selectedPlant || a.plantId === selectedPlant.id));
+                if (completedList.length === 0) {
+                  return (
+                    <p className="text-[11px] text-sage-400 italic text-center py-4">
+                      {selectedPlant 
+                        ? `Nessuna memoria storica compiuta per ${selectedPlant.nickname}.` 
+                        : "Seleziona una pianta per vederne lo storico."}
+                    </p>
+                  );
+                }
+                return completedList.slice(0, 5).map(a => (
+                  <div 
+                    key={a.id} 
+                    title={isReadOnlyMode ? "Cronologia in sola lettura" : "Tieni premuto per eliminare permanentemente"}
+                    onMouseDown={(e) => handleLongPressStart(e, a.id, "completed-activity", a.title)}
+                    onTouchStart={(e) => handleLongPressStart(e, a.id, "completed-activity", a.title)}
+                    onMouseUp={handleLongPressEnd}
+                    onTouchEnd={handleLongPressEnd}
+                    onMouseLeave={handleLongPressEnd}
+                    onClick={(e) => handleElementClick(e, () => {
+                      showToast("Tieni premuto su questa faccenda chiusa per rimuoverla dallo storico biologico. 🏷️");
+                    })}
+                    className="p-3 bg-[#fafafa] hover:bg-red-50/10 hover:border-red-100 active:scale-[0.98] select-none transition-all cursor-pointer rounded-xl border border-[#e2e2d8] text-[10px] text-sage-600 space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-1.5 text-[#2d3a27] font-semibold uppercase text-[9px]">
+                      <div className="flex items-center gap-1">
+                        <CheckSquare className="w-3 h-3 text-[#7e8c69] flex-shrink-0" />
+                        <span>{a.title}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditActivity(a.id, true);
+                        }}
+                        className="p-1 hover:bg-sage-100/60 text-sage-400 hover:text-indigo-600 transition-all rounded-lg cursor-pointer flex items-center justify-center bg-stone-50/50"
+                        title="Modifica storico"
+                      >
+                        <Edit className="w-3 h-3" />
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startEditActivity(a.id, true);
-                      }}
-                      className="p-1 hover:bg-sage-100/60 text-sage-400 hover:text-indigo-600 transition-all rounded-lg cursor-pointer flex items-center justify-center bg-stone-50/50"
-                      title="Modifica storico"
-                    >
-                      <Edit className="w-3 h-3" />
-                    </button>
+                    <p className="text-[9px] text-[#8e9299] font-mono">Chiusa il {a.completedAt ? new Date(a.completedAt).toLocaleDateString("it-IT") : ""}</p>
+                    {a.completedNotes && <p className="italic font-serif whitespace-pre-wrap">« {a.completedNotes} »</p>}
                   </div>
-                  <p className="text-[9px] text-[#8e9299] font-mono">Chiusa il {a.completedAt ? new Date(a.completedAt).toLocaleDateString("it-IT") : ""}</p>
-                  {a.completedNotes && <p className="italic font-serif whitespace-pre-wrap">« {a.completedNotes} »</p>}
-                </div>
-              ))}
+                ));
+              })()}
             </div>
           </div>
         </div>
@@ -3742,14 +3904,47 @@ export default function App() {
                   />
                 </div>
 
-                <div className="flex flex-col gap-1">
-                  <label className="font-mono text-[10px] text-sage-400 uppercase">URL Immagine principale</label>
-                  <input
-                    type="text"
-                    value={newPlantForm.imageUrl || ""}
-                    onChange={e => setNewPlantForm({ ...newPlantForm, imageUrl: e.target.value })}
-                    className="p-2 border border-[#e4e8e1] rounded-xl"
-                  />
+                {/* IMAGES DRAG AND DROP & INPUT ENCODING PER MODIFICA */}
+                <div className="space-y-1">
+                  <label className="font-mono text-[10px] text-sage-400 uppercase block">Immagine Principale (Drag & Drop o Seleziona o URL)</label>
+                  <div
+                    onDragOver={handleEditDragOver}
+                    onDragLeave={handleEditDragLeave}
+                    onDrop={handleEditDrop}
+                    onClick={() => fileEditInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-2xl p-4 text-center cursor-pointer transition-colors flex flex-col items-center justify-center gap-1 ${
+                      isDraggingEdit ? "border-emerald-500 bg-emerald-50/10" : "border-sage-300 hover:border-emerald-400 bg-[#fbfbf9]"
+                    }`}
+                  >
+                    <Upload className="w-5 h-5 text-sage-400" />
+                    <span className="text-[10px] font-medium text-sage-600">Trascina un'immagine qui o seleziona file dispositivo</span>
+                    <span className="text-[9px] text-sage-400 font-mono italic">Il file verrà incorporato offline al 100%</span>
+                    <input
+                      type="file"
+                      ref={fileEditInputRef}
+                      className="hidden"
+                      accept="image/*"
+                      onChange={handleEditFileChange}
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1 mt-1">
+                    <span className="text-[9px] font-mono text-sage-400 uppercase">O incolla un link internet URL statico per l'immagine</span>
+                    <input
+                      type="text"
+                      placeholder="https://images.unsplash.com/photo-..."
+                      value={newPlantForm.imageUrl || ""}
+                      onChange={e => setNewPlantForm({ ...newPlantForm, imageUrl: e.target.value })}
+                      className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 font-mono"
+                    />
+                  </div>
+
+                  {newPlantForm.imageUrl && (
+                    <div className="flex items-center gap-2 mt-2 p-2 bg-sage-50 rounded-xl">
+                      <img src={newPlantForm.imageUrl} className="w-10 h-10 object-cover rounded-md border" />
+                      <span className="text-[9px] text-sage-500 font-mono truncate max-w-xs">{newPlantForm.imageUrl}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-1">
@@ -3796,12 +3991,22 @@ export default function App() {
                   </div>
                 </div>
 
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-sage-800 hover:bg-sage-900 text-white font-serif font-black tracking-tight text-center rounded-2xl cursor-pointer shadow-md transition-all mt-4"
-                >
-                  Salva Modifiche Diario
-                </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+                  <button
+                    type="submit"
+                    className="py-3 bg-sage-800 hover:bg-sage-900 text-white font-serif font-black tracking-tight text-center rounded-2xl cursor-pointer shadow-md transition-all text-xs"
+                  >
+                    Salva Modifiche Diario
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleEditPlantAndStoricize}
+                    className="py-3 bg-emerald-700 hover:bg-emerald-800 text-white font-serif font-black tracking-tight text-center rounded-2xl cursor-pointer shadow-md transition-all text-xs"
+                    title="Aggiorna la pianta e inserisci contemporaneamente una nuova nota di snapshot storica sul diario"
+                  >
+                    Modifica nuovo (Storicizza)
+                  </button>
+                </div>
               </form>
             </motion.div>
           </div>
@@ -5342,6 +5547,75 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* --- POPUP DA LONG PRESS SU PIANTA --- */}
+      <AnimatePresence>
+        {longPressedPlant && (
+          <div className="fixed inset-0 bg-black/45 backdrop-blur-xs flex items-center justify-center p-4 z-[95]">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-5 max-w-xs w-full space-y-4 shadow-2xl font-sans"
+            >
+              <div className="text-center pb-2 border-b border-stone-100">
+                <h3 className="font-serif font-bold text-[#2d3a27] text-sm">Opzioni Pianta</h3>
+                <p className="text-[10px] text-sage-400 font-mono italic">« {longPressedPlant.nickname} »</p>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const plant = longPressedPlant;
+                    setLongPressedPlant(null);
+                    // Seleziona la pianta prima
+                    setSelectedPlantId(plant.id);
+                    // Popola il form
+                    setNewPlantForm({
+                      name: plant.name,
+                      nickname: plant.nickname,
+                      species: plant.species,
+                      origin: plant.origin,
+                      startDate: plant.startDate,
+                      description: plant.description,
+                      imageUrl: plant.imageUrl,
+                      status: plant.status,
+                      health: plant.health,
+                      notes: plant.notes,
+                      tags: plant.tags
+                    });
+                    setIsEditPlantOpen(true);
+                  }}
+                  className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-mono text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center justify-center gap-2 shadow-xs"
+                >
+                  <Edit className="w-3.5 h-3.5" /> Modifica Pianta
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const plant = longPressedPlant;
+                    setLongPressedPlant(null);
+                    setPlantIdToDelete(plant.id);
+                  }}
+                  className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white font-mono text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center justify-center gap-2 shadow-xs"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Elimina Pianta
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setLongPressedPlant(null)}
+                className="w-full py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 font-mono text-xs rounded-xl transition-all cursor-pointer font-bold text-center"
+              >
+                Annulla
+              </button>
             </motion.div>
           </div>
         )}
