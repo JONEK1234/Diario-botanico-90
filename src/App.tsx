@@ -32,6 +32,7 @@ import {
   BookOpen,
   CloudLightning,
   Info,
+  ArrowUp,
   ArrowDown,
   Copy,
   Skull,
@@ -638,6 +639,9 @@ export default function App() {
   // Stato per l'apertura del sottomenu delle "Note Salvate" per la pianta selezionata
   const [isSavedNotesViewOpen, setIsSavedNotesViewOpen] = useState(false);
 
+  // Stato per tenere traccia di quali note di diario hanno l'età visualizzata ad oggi (toggled)
+  const [toggledDiaryAges, setToggledDiaryAges] = useState<Record<string, boolean>>({});
+
   // Stato per l'editing di elementi
   const [editingItem, setEditingItem] = useState<{
     id: string;
@@ -992,6 +996,45 @@ export default function App() {
     const today = new Date();
     const diffTime = Math.abs(today.getTime() - start.getTime());
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  };
+
+  const calculateAgeAtDate = (startDateStr: string, pastDateStr: string): number => {
+    const start = new Date(startDateStr.split("T")[0]);
+    const past = new Date(pastDateStr.split("T")[0]);
+    const diffTime = past.getTime() - start.getTime();
+    return Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+  };
+
+  const movePlant = (plantId: string, direction: "up" | "down") => {
+    if (isReadOnlyMode) return;
+    const activeIndex = filteredPlants.findIndex(p => p.id === plantId);
+    if (activeIndex === -1) return;
+
+    const swapWithActiveIndex = direction === "up" ? activeIndex - 1 : activeIndex + 1;
+    if (swapWithActiveIndex < 0 || swapWithActiveIndex >= filteredPlants.length) {
+      showToast(direction === "up" ? "La pianta è già in cima! 🌿" : "La pianta è già in fondo! 🌿");
+      return;
+    }
+
+    const targetPlantId = filteredPlants[swapWithActiveIndex].id;
+
+    setState(prev => {
+      const plants = [...prev.plants];
+      const idx1 = plants.findIndex(p => p.id === plantId);
+      const idx2 = plants.findIndex(p => p.id === targetPlantId);
+      if (idx1 === -1 || idx2 === -1) return prev;
+
+      // Swap position of plants in state
+      const temp = plants[idx1];
+      plants[idx1] = plants[idx2];
+      plants[idx2] = temp;
+
+      return {
+        ...prev,
+        plants
+      };
+    });
+    showToast(direction === "up" ? "Pianta spostata in alto ⬆️" : "Pianta spostata in basso ⬇️");
   };
 
   // --- TRASFORMAZIONE FILE IN BASE64 PER RENDERE L'HTML COMPILATO STANDALONE INTEGRALE ---
@@ -3228,7 +3271,7 @@ export default function App() {
                         />
 
                         <div className="flex items-center justify-between text-[11px] font-mono text-sage-400">
-                          <span className="font-medium">{new Date(entry.date).toLocaleDateString("it-IT", {
+                          <span className="font-medium">Registrato il: {new Date(entry.date).toLocaleDateString("it-IT", {
                             day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
                           })}</span>
 
@@ -3252,6 +3295,44 @@ export default function App() {
 
                         <h4 className="font-serif italic font-bold text-[#2d3a27] mt-1.5 text-[14px]">{entry.eventTitle}</h4>
                         <p className="text-xs text-sage-600 mt-1 leading-relaxed font-sans whitespace-pre-wrap">{entry.notes}</p>
+
+                        {/* INTERACTIVE DAYS OF LIFE BADGE */}
+                        {(() => {
+                          const ageAtMoment = calculateAgeAtDate(selectedPlant.startDate, entry.date);
+                          const currentAgeOfPlant = calculateAge(selectedPlant.startDate);
+                          const daysPassed = Math.max(0, currentAgeOfPlant - ageAtMoment);
+                          const isToggled = !!toggledDiaryAges[entry.id];
+
+                          return (
+                            <div 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setToggledDiaryAges(prev => ({
+                                  ...prev,
+                                  [entry.id]: !prev[entry.id]
+                                }));
+                              }}
+                              className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-mono font-bold transition-all cursor-pointer border select-none active:scale-95 shadow-2xs hover:scale-[1.01]"
+                              style={{
+                                backgroundColor: isToggled ? "#f0fdf4" : "#fafaf9",
+                                borderColor: isToggled ? "#bbf7d0" : "#e2e2d8",
+                                color: isToggled ? "#15803d" : "#57534e",
+                              }}
+                              title="Clicca per alternare tra l'età storica e l'età calcolata ad oggi"
+                            >
+                              <span className="text-xs">{isToggled ? "🔄" : "🌱"}</span>
+                              {isToggled ? (
+                                <span>
+                                  Età della pianta ad oggi: <strong className="text-emerald-800 font-extrabold">{currentAgeOfPlant} giorni</strong> <span className="opacity-75 font-normal text-emerald-600">({daysPassed} gg passati da allora)</span>
+                                </span>
+                              ) : (
+                                <span>
+                                  Età della pianta al momento: <strong className="text-stone-800 font-extrabold">{ageAtMoment} giorni</strong> <span className="opacity-75 font-normal text-stone-500">(Clicca per aggiornare ad oggi 🕒)</span>
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {entry.imageUrl && (
                           <div className="mt-3 overflow-hidden rounded-xl border border-[#e2e2d8] max-w-[200px] cursor-zoom-in" onClick={() => setFullscreenImageUrl(entry.imageUrl)} title="Clicca per ingrandire">
@@ -5638,6 +5719,28 @@ export default function App() {
                 >
                   <Edit className="w-3.5 h-3.5" /> Modifica Pianta
                 </button>
+
+                <div className="border-t border-b border-stone-100 py-2.5 space-y-1.5">
+                  <div className="text-[10px] font-mono text-sage-400 font-bold uppercase tracking-wider text-center">Organizza Posizione</div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => movePlant(longPressedPlant.id, "up")}
+                      className="flex-1 py-2 bg-stone-100 hover:bg-stone-200 text-[#2d3a27] font-mono text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center justify-center gap-1.5 border border-[#e2e2d8] active:scale-95"
+                      title="Sposta in alto nella serra"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5 text-sage-600 animate-bounce" /> Sposta Su
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => movePlant(longPressedPlant.id, "down")}
+                      className="flex-1 py-2 bg-stone-100 hover:bg-stone-200 text-[#2d3a27] font-mono text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center justify-center gap-1.5 border border-[#e2e2d8] active:scale-95"
+                      title="Sposta in basso nella serra"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5 text-sage-600 animate-bounce" /> Sposta Giù
+                    </button>
+                  </div>
+                </div>
 
                 <button
                   type="button"
