@@ -56,6 +56,17 @@ const getApiUrl = (endpoint: string): string => {
   return `${baseUrl}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
 };
 
+const toLocalDatetimeString = (isoString: string): string => {
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return "";
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
+
 // --- GRUPPO STRUMENTALE COMPRESSIONE IMMAGINI (Previene blocchi DB Firestore 1MB) ---
 const compressImage = (base64Str: string, maxWidth = 500, quality = 0.5): Promise<string> => {
   return new Promise((resolve) => {
@@ -654,6 +665,7 @@ export default function App() {
     priority?: "bassa" | "media" | "alta";
     dueDate?: string;
     imageUrl?: string;
+    date?: string;
   } | null>(() => {
     try {
       const saved = localStorage.getItem("flora_editing_item");
@@ -1563,6 +1575,35 @@ export default function App() {
     showToast("Voce della cronologia eliminata definitivamente. 📒");
   };
 
+  const moveDiaryEntry = (entryId: string, plantId: string, direction: "up" | "down") => {
+    if (isReadOnlyMode) return;
+    setState(prev => {
+      const updatedPlants = prev.plants.map(p => {
+        if (p.id !== plantId) return p;
+        const diary = [...(p.diary || [])];
+        const index = diary.findIndex(d => d.id === entryId);
+        if (index === -1) return p;
+
+        const targetIndex = direction === "up" ? index - 1 : index + 1;
+        if (targetIndex >= 0 && targetIndex < diary.length) {
+          // Swap
+          const temp = diary[index];
+          diary[index] = diary[targetIndex];
+          diary[targetIndex] = temp;
+        }
+        return {
+          ...p,
+          diary
+        };
+      });
+      return {
+        ...prev,
+        plants: updatedPlants
+      };
+    });
+    showToast("Posizione della nota modificata. 📒↕️");
+  };
+
   const startEditDiary = (entryId: string, plantId: string) => {
     if (isReadOnlyMode) {
       showToast("La serra è in sola lettura. Modifiche disabilitate. 🌿");
@@ -1578,7 +1619,8 @@ export default function App() {
         title: entry.eventTitle,
         notes: entry.notes,
         category: entry.category,
-        imageUrl: entry.imageUrl
+        imageUrl: entry.imageUrl,
+        date: entry.date
       });
     }
   };
@@ -1618,20 +1660,24 @@ export default function App() {
         ...prev,
         plants: prev.plants.map(p => {
           if (p.id === editingItem.parentPlantId) {
+            const updatedDiary = (p.diary || []).map(d => {
+              if (d.id === editingItem.id) {
+                return {
+                  ...d,
+                  eventTitle: editingItem.title,
+                  notes: editingItem.notes || "",
+                  category: (editingItem.category || d.category) as DiaryEntry["category"],
+                  imageUrl: editingItem.imageUrl,
+                  date: editingItem.date || d.date
+                };
+              }
+              return d;
+            });
+            // Auto-sort by date descending!
+            updatedDiary.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
             return {
               ...p,
-              diary: (p.diary || []).map(d => {
-                if (d.id === editingItem.id) {
-                  return {
-                    ...d,
-                    eventTitle: editingItem.title,
-                    notes: editingItem.notes || "",
-                    category: (editingItem.category || d.category) as DiaryEntry["category"],
-                    imageUrl: editingItem.imageUrl
-                  };
-                }
-                return d;
-              })
+              diary: updatedDiary
             };
           }
           return p;
@@ -1773,7 +1819,7 @@ export default function App() {
 
     const newEntry: DiaryEntry = {
       id: "diary-" + Date.now(),
-      date: new Date().toISOString(),
+      date: newDiaryForm.date || new Date().toISOString(),
       eventTitle: newDiaryForm.eventTitle,
       notes: newDiaryForm.notes,
       imageUrl: newDiaryForm.imageUrl || undefined,
@@ -1784,9 +1830,11 @@ export default function App() {
       ...prev,
       plants: prev.plants.map(p => {
         if (p.id === selectedPlantId) {
+          const updatedDiary = [newEntry, ...(p.diary || [])];
+          updatedDiary.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
           return {
             ...p,
-            diary: [newEntry, ...p.diary]
+            diary: updatedDiary
           };
         }
         return p;
@@ -1799,7 +1847,8 @@ export default function App() {
       eventTitle: "",
       notes: "",
       imageUrl: "",
-      category: "osservazione"
+      category: "osservazione",
+      date: new Date().toISOString()
     });
     showToast("Splendido momento aggiunto alla timeline!");
   };
@@ -3006,6 +3055,7 @@ export default function App() {
             isSavedNotesViewOpen ? (
               <SavedNotesView
                 plant={selectedPlant}
+                allPlants={state.plants}
                 onBack={() => setIsSavedNotesViewOpen(false)}
                 onUpdateNotes={(plantId, updatedNotes) => {
                   setState(prev => ({
@@ -3276,6 +3326,32 @@ export default function App() {
                           })}</span>
 
                           <div className="flex items-center gap-1.5">
+                            {!isReadOnlyMode && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    moveDiaryEntry(entry.id, selectedPlant.id, "up");
+                                  }}
+                                  className="p-1 hover:bg-sage-100/60 rounded-lg text-sage-500 hover:text-emerald-600 transition-all cursor-pointer flex items-center justify-center bg-stone-50/50"
+                                  title="Sposta sopra"
+                                >
+                                  <ArrowUp className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    moveDiaryEntry(entry.id, selectedPlant.id, "down");
+                                  }}
+                                  className="p-1 hover:bg-sage-100/60 rounded-lg text-sage-500 hover:text-emerald-600 transition-all cursor-pointer flex items-center justify-center bg-stone-50/50"
+                                  title="Sposta sotto"
+                                >
+                                  <ArrowDown className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            )}
                             <button
                               type="button"
                               onClick={(e) => {
@@ -4181,6 +4257,20 @@ export default function App() {
                     <option value="concimazione">Alimentazione / Concime</option>
                     <option value="rinvaso">Rinvaso o Sviluppo di radici</option>
                   </select>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="font-mono text-[10px] text-sage-400 uppercase">Data e Ora dell'Evento</label>
+                  <input
+                    type="datetime-local"
+                    value={toLocalDatetimeString(newDiaryForm.date || new Date().toISOString())}
+                    onChange={e => {
+                      const localVal = e.target.value;
+                      const isoVal = localVal ? new Date(localVal).toISOString() : new Date().toISOString();
+                      setNewDiaryForm({ ...newDiaryForm, date: isoVal });
+                    }}
+                    className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 text-xs font-mono bg-white"
+                  />
                 </div>
 
                 <div className="flex flex-col gap-1">
@@ -5595,6 +5685,22 @@ export default function App() {
                         onChange={(e) => setEditingItem({ ...editingItem, imageUrl: e.target.value })}
                         className="w-full bg-[#fcfcf9] p-2.5 rounded-xl border border-[#e2e2d8] focus:border-[#2d3a27] focus:outline-hidden text-xs text-stone-800"
                         placeholder="https://images.unsplash.com/..."
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-stone-600 font-bold uppercase text-[9px] tracking-wider font-mono">
+                        Data e Ora di Creazione
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={toLocalDatetimeString(editingItem.date || "")}
+                        onChange={(e) => {
+                          const localVal = e.target.value;
+                          const isoVal = localVal ? new Date(localVal).toISOString() : new Date().toISOString();
+                          setEditingItem({ ...editingItem, date: isoVal });
+                        }}
+                        className="w-full bg-[#fcfcf9] p-2.5 rounded-xl border border-[#e2e2d8] focus:border-[#2d3a27] focus:outline-hidden text-xs text-stone-800"
                       />
                     </div>
                   </>

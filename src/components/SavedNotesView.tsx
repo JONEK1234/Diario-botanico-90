@@ -10,9 +10,25 @@ import {
   FileText,
   Image as ImageIcon,
   ChevronLeft,
-  BookOpen
+  BookOpen,
+  ArrowUp,
+  ArrowDown,
+  Copy,
+  Check
 } from "lucide-react";
 import { Plant, SavedNote } from "../types";
+
+// Helper to convert ISO date to YYYY-MM-DDTHH:MM local datetime format
+const toLocalDatetimeString = (isoString: string): string => {
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return "";
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
 
 // Light-weight image compression helpers inside the component to prevent bloat
 const compressImage = (base64Str: string, maxWidth = 500, quality = 0.5): Promise<string> => {
@@ -75,6 +91,7 @@ const compressFile = (file: File, maxWidth = 500, quality = 0.5): Promise<string
 
 interface SavedNotesViewProps {
   plant: Plant;
+  allPlants: Plant[];
   onBack: () => void;
   onUpdateNotes: (plantId: string, notes: SavedNote[]) => void;
   isReadOnlyMode: boolean;
@@ -83,6 +100,7 @@ interface SavedNotesViewProps {
 
 export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
   plant,
+  allPlants,
   onBack,
   onUpdateNotes,
   isReadOnlyMode,
@@ -103,6 +121,7 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
   const [additionalImages, setAdditionalImages] = useState<string[]>([]);
   const [inputUrl, setInputUrl] = useState("");
   const [inputAdditionalUrl, setInputAdditionalUrl] = useState("");
+  const [createdAt, setCreatedAt] = useState("");
 
   // Refs for file inputs
   const coverInputRef = useRef<HTMLInputElement>(null);
@@ -110,6 +129,10 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
 
   // Zoomed-in image state
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+
+  // Copy states
+  const [noteToCopy, setNoteToCopy] = useState<SavedNote | null>(null);
+  const [selectedTargetPlantIds, setSelectedTargetPlantIds] = useState<string[]>([]);
 
   // Handlers for Form
   const openNewNoteForm = () => {
@@ -120,6 +143,7 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
     setAdditionalImages([]);
     setInputUrl("");
     setInputAdditionalUrl("");
+    setCreatedAt(toLocalDatetimeString(new Date().toISOString()));
     setIsFormOpen(true);
   };
 
@@ -131,6 +155,7 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
     setAdditionalImages(note.images || []);
     setInputUrl("");
     setInputAdditionalUrl("");
+    setCreatedAt(toLocalDatetimeString(note.createdAt));
     setIsFormOpen(true);
   };
 
@@ -185,10 +210,10 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
 
   const handleSaveNote = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) {
-      showToast("Inserisci un titolo per la nota.");
-      return;
-    }
+    const finalTitle = title.trim();
+    const finalDescription = description.trim();
+
+    const isoCreatedAt = createdAt ? new Date(createdAt).toISOString() : new Date().toISOString();
 
     if (editingNote) {
       // Modifica nota esistente
@@ -196,10 +221,11 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
         if (n.id === editingNote.id) {
           return {
             ...n,
-            title: title.trim(),
-            description: description.trim(),
+            title: finalTitle,
+            description: finalDescription,
             coverImage: coverImage.trim() || undefined,
             images: additionalImages,
+            createdAt: isoCreatedAt,
           };
         }
         return n;
@@ -210,11 +236,11 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
       // Crea nuova nota
       const newNote: SavedNote = {
         id: "note-" + Date.now(),
-        title: title.trim(),
-        description: description.trim(),
+        title: finalTitle,
+        description: finalDescription,
         coverImage: coverImage.trim() || undefined,
         images: additionalImages,
-        createdAt: new Date().toISOString(),
+        createdAt: isoCreatedAt,
       };
       onUpdateNotes(plant.id, [newNote, ...notes]);
       showToast("Nuova nota salvata con successo! 📝🌿");
@@ -236,6 +262,57 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
     }
     setNoteIdToDelete(null);
     showToast("Nota eliminata permanentemente. 🗑️");
+  };
+
+  const handleConfirmCopy = () => {
+    if (!noteToCopy) return;
+    if (selectedTargetPlantIds.length === 0) {
+      showToast("Seleziona almeno una pianta a cui copiare la nota! 🌿");
+      return;
+    }
+
+    selectedTargetPlantIds.forEach(targetId => {
+      const targetPlant = allPlants.find(p => p.id === targetId);
+      if (targetPlant) {
+        const clonedNote: SavedNote = {
+          ...noteToCopy,
+          id: "note-copied-" + Date.now() + "-" + Math.random().toString(36).substr(2, 5),
+          createdAt: new Date().toISOString()
+        };
+        const existingNotes = targetPlant.savedNotes || [];
+        onUpdateNotes(targetId, [clonedNote, ...existingNotes]);
+      }
+    });
+
+    showToast(`Nota "${noteToCopy.title}" copiata correttamente su ${selectedTargetPlantIds.length} piant${selectedTargetPlantIds.length === 1 ? 'a' : 'e'}! 📋🌿`);
+    setNoteToCopy(null);
+    setSelectedTargetPlantIds([]);
+  };
+
+  const toggleSelectTargetPlant = (plantId: string) => {
+    setSelectedTargetPlantIds(prev =>
+      prev.includes(plantId) ? prev.filter(id => id !== plantId) : [...prev, plantId]
+    );
+  };
+
+  const moveNote = (noteId: string, direction: "up" | "down") => {
+    if (isReadOnlyMode) return;
+    const noteIndex = notes.findIndex(n => n.id === noteId);
+    if (noteIndex === -1) return;
+
+    const swapIndex = direction === "up" ? noteIndex - 1 : noteIndex + 1;
+    if (swapIndex < 0 || swapIndex >= notes.length) {
+      showToast(direction === "up" ? "La nota è già in cima! 📝" : "La nota è già in fondo! 📝");
+      return;
+    }
+
+    const updatedNotes = [...notes];
+    const temp = updatedNotes[noteIndex];
+    updatedNotes[noteIndex] = updatedNotes[swapIndex];
+    updatedNotes[swapIndex] = temp;
+
+    onUpdateNotes(plant.id, updatedNotes);
+    showToast(direction === "up" ? "Nota spostata in alto ⬆️" : "Nota spostata in basso ⬇️");
   };
 
   const activeNote = notes.find(n => n.id === activeNoteId);
@@ -316,7 +393,7 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
             </span>
 
             <h3 className="text-2xl font-serif italic text-[#2d3a27] font-bold">
-              {activeNote.title}
+              {activeNote.title || <span className="italic text-stone-400">Senza Titolo</span>}
             </h3>
 
             {/* Immagine di Copertina */}
@@ -388,10 +465,20 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
               <label className="font-mono text-[10px] text-sage-400 uppercase">Titolo Nota</label>
               <input
                 type="text"
-                placeholder="es. Istruzioni per Concime o Bisogni di Luce"
+                placeholder="es. Istruzioni per Concime o Bisogni di Luce (Opzionale)"
                 value={title}
                 onChange={e => setTitle(e.target.value)}
                 className="p-2.5 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 text-xs"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="font-mono text-[10px] text-sage-400 uppercase">Data di Creazione / Registrazione</label>
+              <input
+                type="datetime-local"
+                value={createdAt}
+                onChange={e => setCreatedAt(e.target.value)}
+                className="p-2.5 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 text-xs font-mono"
                 required
               />
             </div>
@@ -597,7 +684,7 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
                           {new Date(note.createdAt).toLocaleDateString("it-IT")}
                         </span>
                         <h4 className="font-serif font-black text-[#2d3a27] text-sm truncate leading-tight">
-                          {note.title}
+                          {note.title || <span className="italic text-stone-400">Senza Titolo</span>}
                         </h4>
                         <p className="text-[11px] text-sage-500 leading-relaxed line-clamp-3">
                           {previewText || <span className="italic text-sage-300">Nessuna descrizione.</span>}
@@ -611,7 +698,27 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
                       </span>
 
                       {!isReadOnlyMode && (
-                        <div className="flex gap-1">
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              moveNote(note.id, "up");
+                            }}
+                            className="p-1 hover:bg-[#faf6f0] rounded text-sage-600 transition-colors cursor-pointer"
+                            title="Sposta nota sopra"
+                          >
+                            <ArrowUp className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              moveNote(note.id, "down");
+                            }}
+                            className="p-1 hover:bg-[#faf6f0] rounded text-sage-600 transition-colors cursor-pointer"
+                            title="Sposta nota sotto"
+                          >
+                            <ArrowDown className="w-3.5 h-3.5" />
+                          </button>
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -621,6 +728,17 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
                             title="Modifica nota"
                           >
                             <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setNoteToCopy(note);
+                              setSelectedTargetPlantIds([]);
+                            }}
+                            className="p-1 hover:bg-emerald-50 rounded text-emerald-600 transition-colors cursor-pointer"
+                            title="Copia questa nota su altre piante"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
                           </button>
                           <button
                             onClick={(e) => {
@@ -697,6 +815,122 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
                 <button
                   onClick={() => setNoteIdToDelete(null)}
                   className="flex-1 py-2.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold cursor-pointer transition-all active:scale-98"
+                >
+                  Annulla
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MODALE DI SELEZIONE PIANTE PER COPIA NOTA */}
+      <AnimatePresence>
+        {noteToCopy && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-[110]">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white rounded-3xl border border-[#e2e2d8] p-6 max-w-md w-full space-y-4 shadow-xl flex flex-col max-h-[85vh] font-sans text-xs"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-stone-100">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
+                    <Copy className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-serif font-black text-stone-900 text-sm">Copia Nota</h4>
+                    <p className="text-[10px] font-mono uppercase text-sage-400">Duplica su altre specie</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setNoteToCopy(null)}
+                  className="p-1 hover:bg-stone-100 rounded-lg text-stone-400 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-xs text-sage-600">
+                  Stai copiando la nota: <strong className="text-stone-800 font-bold">"{noteToCopy.title}"</strong>
+                </p>
+                <p className="text-[10px] text-sage-400">
+                  Seleziona una o più piante target per duplicare questa nota nella loro scheda:
+                </p>
+              </div>
+
+              {/* Lista Piante */}
+              <div className="flex-1 overflow-y-auto pr-1 py-1 space-y-2 max-h-[40vh]">
+                {allPlants.filter(p => p.id !== plant.id).length === 0 ? (
+                  <p className="text-center py-6 text-xs italic text-sage-400">
+                    Non ci sono altre piante nell'erbario a cui copiare questa nota.
+                  </p>
+                ) : (
+                  allPlants
+                    .filter(p => p.id !== plant.id)
+                    .map(p => {
+                      const isSelected = selectedTargetPlantIds.includes(p.id);
+                      return (
+                        <div
+                          key={p.id}
+                          onClick={() => toggleSelectTargetPlant(p.id)}
+                          className={`flex items-center justify-between p-2.5 rounded-xl border transition-all cursor-pointer ${
+                            isSelected
+                              ? "bg-emerald-50/50 border-emerald-400 shadow-2xs"
+                              : "bg-stone-50/30 border-stone-100 hover:bg-stone-50 hover:border-stone-200"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 font-sans">
+                            {p.imageUrl ? (
+                              <img
+                                src={p.imageUrl}
+                                alt={p.name}
+                                className="w-9 h-9 object-cover rounded-lg border border-stone-200"
+                              />
+                            ) : (
+                              <div className="w-9 h-9 bg-stone-100 rounded-lg flex items-center justify-center text-xs">
+                                🌱
+                              </div>
+                            )}
+                            <div>
+                              <div className="font-serif font-bold text-[#2d3a27] text-xs leading-none">
+                                {p.name || p.species}
+                              </div>
+                              <div className="text-[9px] font-mono text-sage-400 mt-1">
+                                {p.nickname ? `"${p.nickname}"` : p.species}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div
+                            className={`w-4 h-4 rounded-md border flex items-center justify-center transition-all ${
+                              isSelected
+                                ? "bg-emerald-600 border-emerald-600 text-white"
+                                : "border-stone-300 bg-white"
+                            }`}
+                          >
+                            {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-stone-100 font-mono text-xs">
+                <button
+                  onClick={handleConfirmCopy}
+                  disabled={selectedTargetPlantIds.length === 0}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-stone-100 disabled:text-stone-400 text-white rounded-xl text-xs font-semibold cursor-pointer transition-all active:scale-98 flex items-center justify-center gap-1"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Conferma copia ({selectedTargetPlantIds.length})
+                </button>
+                <button
+                  onClick={() => setNoteToCopy(null)}
+                  className="flex-1 py-2.5 bg-[#fcfcf9] hover:bg-[#fafaf3] border border-[#e2e2d8] text-sage-700 rounded-xl text-xs font-semibold cursor-pointer transition-all active:scale-98"
                 >
                   Annulla
                 </button>
