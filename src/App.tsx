@@ -34,6 +34,7 @@ import {
   Info,
   ArrowUp,
   ArrowDown,
+  ChevronDown,
   Copy,
   Skull,
   HeartOff,
@@ -174,6 +175,46 @@ const compressStateImages = async (stateToSave: JournalState): Promise<JournalSt
 const sanitizeFirestorePayload = (obj: any): any => {
   if (obj === undefined) return null;
   return JSON.parse(JSON.stringify(obj));
+};
+
+// Calcola la scadenza relativa in italiano, mostrando giorno della settimana, giorni e ore rimanenti
+const getRelativeDueTime = (dueDateStr: string) => {
+  if (!dueDateStr) return { text: "", isExpired: false, weekday: "" };
+  
+  const targetDate = new Date(dueDateStr);
+  if (isNaN(targetDate.getTime())) {
+    return { text: dueDateStr, isExpired: false, weekday: "" };
+  }
+  
+  // Fine giornata per la scadenza
+  const targetMidnight = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59);
+  const now = new Date();
+  
+  const weekday = targetMidnight.toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "short" });
+  
+  const diffMs = targetMidnight.getTime() - now.getTime();
+  const diffHoursAbs = Math.abs(diffMs) / (1000 * 60 * 60);
+  const days = Math.floor(diffHoursAbs / 24);
+  const hours = Math.floor(diffHoursAbs % 24);
+  
+  const isExpired = diffMs < 0;
+  
+  let text = "";
+  if (isExpired) {
+    if (days === 0) {
+      text = `Scaduto da ${hours} ${hours === 1 ? 'ora' : 'ore'}`;
+    } else {
+      text = `Scaduto da ${days} ${days === 1 ? 'giorno' : 'giorni'} e ${hours} ${hours === 1 ? 'ora' : 'ore'}`;
+    }
+  } else {
+    if (days === 0) {
+      text = `Scade oggi (tra ${hours} ${hours === 1 ? 'ora' : 'ore'})`;
+    } else {
+      text = `Mancano ${days} ${days === 1 ? 'giorno' : 'giorni'} e ${hours} ${hours === 1 ? 'ora' : 'ore'}`;
+    }
+  }
+  
+  return { text, isExpired, weekday };
 };
 
 export default function App() {
@@ -342,6 +383,7 @@ export default function App() {
     }
     return false;
   });
+  const [isTodoActivitiesModalOpen, setIsTodoActivitiesModalOpen] = useState(false);
   const [plantIdToDelete, setPlantIdToDelete] = useState<string | null>(null);
   const [isShareOpen, setIsShareOpen] = useState(false);
   const [generatedShareUrl, setGeneratedShareUrl] = useState("");
@@ -650,6 +692,12 @@ export default function App() {
   // Stato per l'apertura del sottomenu delle "Note Salvate" per la pianta selezionata
   const [isSavedNotesViewOpen, setIsSavedNotesViewOpen] = useState(false);
 
+  // Stati per dropdown personalizzati di origine e stato crescita nelle schede di creazione e modifica
+  const [isOriginDropdownOpen, setIsOriginDropdownOpen] = useState(false);
+  const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
+  const [isEditOriginDropdownOpen, setIsEditOriginDropdownOpen] = useState(false);
+  const [isEditStatusDropdownOpen, setIsEditStatusDropdownOpen] = useState(false);
+
   // Stato per tenere traccia di quali note di diario hanno l'età visualizzata ad oggi (toggled)
   const [toggledDiaryAges, setToggledDiaryAges] = useState<Record<string, boolean>>({});
 
@@ -798,6 +846,23 @@ export default function App() {
       localStorage.setItem("flora_is_add_tracker_open", String(isAddTrackerOpen));
     }
   }, [isAddTrackerOpen]);
+
+  // Blocca lo scroll della pagina principale sottostante quando una modale/dialogo è aperta, consentendo lo scroll solo della modale
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      const isAnyModalOpen = isAddPlantOpen || isEditPlantOpen || isNewDiaryOpen || isSettingsOpen || isAddActivityOpen || isAgendaOpen || isHistoryOpen || isTodoActivitiesModalOpen;
+      if (isAnyModalOpen) {
+        document.body.style.overflow = "hidden";
+      } else {
+        document.body.style.overflow = "";
+      }
+    }
+    return () => {
+      if (typeof document !== "undefined") {
+        document.body.style.overflow = "";
+      }
+    };
+  }, [isAddPlantOpen, isEditPlantOpen, isNewDiaryOpen, isSettingsOpen, isAddActivityOpen, isAgendaOpen, isHistoryOpen, isTodoActivitiesModalOpen]);
 
   // A. PWA Handler: Cattura la richiesta di installazione prima del caricamento sulla homepage
   useEffect(() => {
@@ -2342,7 +2407,14 @@ export default function App() {
     const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           p.nickname.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           p.species.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = selectedStatusFilter === "all" || p.status === selectedStatusFilter;
+    const matchesStatus = selectedStatusFilter === "all" || 
+                          String(p.status).toLowerCase() === selectedStatusFilter.toLowerCase() ||
+                          String(p.status).toLowerCase().includes(selectedStatusFilter.toLowerCase()) ||
+                          (selectedStatusFilter === "fioritura" && String(p.status).toLowerCase().includes("florido")) ||
+                          (selectedStatusFilter === "recupero" && String(p.status).toLowerCase().includes("recupero")) ||
+                          (selectedStatusFilter === "germoglio" && String(p.status).toLowerCase().includes("germoglio")) ||
+                          (selectedStatusFilter === "crescita" && String(p.status).toLowerCase().includes("crescita")) ||
+                          (selectedStatusFilter === "stress" && String(p.status).toLowerCase().includes("sofferenza"));
     const matchesTag = selectedTagFilter === "all" || p.tags.includes(selectedTagFilter);
     return matchesSearch && matchesStatus && matchesTag;
   });
@@ -2826,7 +2898,10 @@ export default function App() {
           </div>
         </div>
 
-        <div className="bento-card p-4 flex items-center gap-3">
+        <div 
+          onClick={() => setIsTodoActivitiesModalOpen(true)}
+          className="bento-card p-4 flex items-center gap-3 cursor-pointer hover:bg-stone-50 active:scale-95 transition-all"
+        >
           <div className="p-2.5 rounded-xl bg-[#faf6f0] text-amber-900 flex items-center justify-center">
             <CalendarClock className="w-4.5 h-4.5 text-amber-700" />
           </div>
@@ -3032,8 +3107,8 @@ export default function App() {
 
                       <div className="flex items-center justify-between mt-1 text-[9px] font-mono">
                         <span className={`px-2 py-0.5 rounded-full text-[8px] font-semibold uppercase tracking-wider ${
-                          p.status === PlantStatus.FIORITURA ? "bg-[#7e8c69] text-white" :
-                          p.status === PlantStatus.STRESS ? "bg-orange-100 text-[#d68a56]" :
+                          (String(p.status).toLowerCase().includes("fioritura") || String(p.status).toLowerCase().includes("florido")) ? "bg-[#7e8c69] text-white" :
+                          (String(p.status).toLowerCase().includes("stress") || String(p.status).toLowerCase().includes("sofferenza")) ? "bg-orange-100 text-[#d68a56]" :
                           "bg-sage-50 text-[#5a5a40]"
                         }`}>
                           {p.status}
@@ -3786,12 +3861,12 @@ export default function App() {
       {/* --- MODALE 2: AGGIUNGI NUOVA PIANTA --- */}
       <AnimatePresence>
         {isAddPlantOpen && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-lg w-full space-y-4 my-8"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-lg w-full space-y-4 my-auto text-left"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-black text-[#2d3a2e] text-lg flex items-center gap-1.5">
@@ -3840,38 +3915,98 @@ export default function App() {
                     />
                   </div>
 
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 relative">
                     <label className="font-mono text-[10px] text-sage-400 uppercase">Metodo Provenienza / Origine</label>
-                    <select
-                      value={newPlantForm.origin}
-                      onChange={e => setNewPlantForm({ ...newPlantForm, origin: e.target.value as PlantOrigin })}
-                      className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 bg-white"
-                    >
-                      <option value="acquisto">Acquistata da vivaio / mercato</option>
-                      <option value="seme">Seminata / Germogliata da seme</option>
-                      <option value="talea">Nata da Talea / Propagazione ad acqua</option>
-                      <option value="trapianto">Trapianto / Innesto</option>
-                      <option value="recupero">Salvata da incuria / Recuperata</option>
-                    </select>
+                    <div className="relative flex items-center">
+                      <input
+                        type="text"
+                        placeholder="es. Acquisto, Regalo, Seme"
+                        value={newPlantForm.origin || ""}
+                        onChange={e => setNewPlantForm({ ...newPlantForm, origin: e.target.value })}
+                        className="w-full p-2 pr-10 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 text-xs bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setIsOriginDropdownOpen(!isOriginDropdownOpen)}
+                        className="absolute right-1 w-7 h-7 border border-[#e4e8e1] rounded-lg bg-stone-50/80 hover:bg-stone-100 text-sage-500 transition-colors flex items-center justify-center cursor-pointer"
+                        title="Seleziona predefiniti"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+
+                      {isOriginDropdownOpen && (
+                        <div className="absolute top-full right-0 left-0 mt-1 bg-white border border-[#e4e8e1] rounded-xl shadow-lg z-[60] max-h-48 overflow-y-auto py-1 font-sans">
+                          {[
+                            "Acquistata da vivaio / mercato",
+                            "Seminata da seme",
+                            "Nata da talea / propagazione",
+                            "Trapianto / Innesto",
+                            "Salvata da incuria / recuperata"
+                          ].map(opt => (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() => {
+                                setNewPlantForm({ ...newPlantForm, origin: opt });
+                                setIsOriginDropdownOpen(false);
+                              }}
+                              className="w-full text-left px-3 py-2 text-xs text-stone-700 hover:bg-emerald-50 hover:text-emerald-800 transition-colors"
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 relative">
                     <label className="font-mono text-[10px] text-sage-400 uppercase">Stato Crescita Iniziale</label>
-                    <select
-                      value={newPlantForm.status}
-                      onChange={e => setNewPlantForm({ ...newPlantForm, status: e.target.value as PlantStatus })}
-                      className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 bg-white"
-                    >
-                      <option value="crescita">Crescita attiva</option>
-                      <option value="germoglio">Giovane germoglio</option>
-                      <option value="stabile">Stabile</option>
-                      <option value="fioritura">Florido / Fioritura</option>
-                      <option value="stress">Stato di sofferenza / Stress</option>
-                      <option value="recupero">In Recupero</option>
-                      <option value="propagazione">Taleazione / Propagazione</option>
-                    </select>
+                    <div className="relative flex items-center">
+                      <input
+                        type="text"
+                        placeholder="es. Crescita attiva, Germoglio"
+                        value={newPlantForm.status || ""}
+                        onChange={e => setNewPlantForm({ ...newPlantForm, status: e.target.value })}
+                        className="w-full p-2 pr-10 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 text-xs bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setIsStatusDropdownOpen(!isStatusDropdownOpen)}
+                        className="absolute right-1 w-7 h-7 border border-[#e4e8e1] rounded-lg bg-stone-50/80 hover:bg-stone-100 text-sage-500 transition-colors flex items-center justify-center cursor-pointer"
+                        title="Seleziona predefiniti"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+
+                      {isStatusDropdownOpen && (
+                        <div className="absolute top-full right-0 left-0 mt-1 bg-white border border-[#e4e8e1] rounded-xl shadow-lg z-[60] max-h-48 overflow-y-auto py-1 font-sans">
+                          {[
+                            "Crescita attiva",
+                            "Giovane germoglio",
+                            "Stabile",
+                            "Florido / fioritura",
+                            "Stato di sofferenza / stress",
+                            "In recupero",
+                            "Taleazione / propagazione"
+                          ].map(opt => (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() => {
+                                setNewPlantForm({ ...newPlantForm, status: opt });
+                                setIsStatusDropdownOpen(false);
+                              }}
+                              className="w-full text-left px-3 py-2 text-xs text-stone-700 hover:bg-emerald-50 hover:text-emerald-800 transition-colors"
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex flex-col gap-1">
@@ -3998,12 +4133,12 @@ export default function App() {
       {/* --- MODALE 3: MODIFICA PIANTA DISPONIBILE --- */}
       <AnimatePresence>
         {isEditPlantOpen && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-lg w-full space-y-4 my-8"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-lg w-full space-y-4 my-auto text-left"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-black text-[#2d3a2e] text-lg flex items-center gap-1.5">
@@ -4049,38 +4184,98 @@ export default function App() {
                     />
                   </div>
 
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 relative">
                     <label className="font-mono text-[10px] text-sage-400 uppercase">Metodo Provenienza / Origine</label>
-                    <select
-                      value={newPlantForm.origin}
-                      onChange={e => setNewPlantForm({ ...newPlantForm, origin: e.target.value as PlantOrigin })}
-                      className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none bg-white"
-                    >
-                      <option value="acquisto">Acquistata da vivaio / mercato</option>
-                      <option value="seme">Seminata / Germogliata da seme</option>
-                      <option value="talea">Nata da Talea / Propagazione ad acqua</option>
-                      <option value="trapianto">Trapianto / Innesto</option>
-                      <option value="recupero">Salvata da incuria / Recuperata</option>
-                    </select>
+                    <div className="relative flex items-center">
+                      <input
+                        type="text"
+                        placeholder="es. Acquisto, Regalo, Seme"
+                        value={newPlantForm.origin || ""}
+                        onChange={e => setNewPlantForm({ ...newPlantForm, origin: e.target.value })}
+                        className="w-full p-2 pr-10 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 text-xs bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setIsEditOriginDropdownOpen(!isEditOriginDropdownOpen)}
+                        className="absolute right-1 w-7 h-7 border border-[#e4e8e1] rounded-lg bg-stone-50/80 hover:bg-stone-100 text-sage-500 transition-colors flex items-center justify-center cursor-pointer"
+                        title="Seleziona predefiniti"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+
+                      {isEditOriginDropdownOpen && (
+                        <div className="absolute top-full right-0 left-0 mt-1 bg-white border border-[#e4e8e1] rounded-xl shadow-lg z-[60] max-h-48 overflow-y-auto py-1 font-sans">
+                          {[
+                            "Acquistata da vivaio / mercato",
+                            "Seminata da seme",
+                            "Nata da talea / propagazione",
+                            "Trapianto / Innesto",
+                            "Salvata da incuria / recuperata"
+                          ].map(opt => (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() => {
+                                setNewPlantForm({ ...newPlantForm, origin: opt });
+                                setIsEditOriginDropdownOpen(false);
+                              }}
+                              className="w-full text-left px-3 py-2 text-xs text-stone-700 hover:bg-emerald-50 hover:text-emerald-800 transition-colors"
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 relative">
                     <label className="font-mono text-[10px] text-sage-400 uppercase">Stato di crescita</label>
-                    <select
-                      value={newPlantForm.status}
-                      onChange={e => setNewPlantForm({ ...newPlantForm, status: e.target.value as PlantStatus })}
-                      className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none bg-white"
-                    >
-                      <option value="crescita">Crescita attiva</option>
-                      <option value="germoglio">Giovane germoglio</option>
-                      <option value="stabile">Stabile</option>
-                      <option value="fioritura">Florido / fioritura</option>
-                      <option value="stress">Stato di sofferenza / Stress</option>
-                      <option value="recupero">In Recupero</option>
-                      <option value="propagazione">Taleazione / Propagazione</option>
-                    </select>
+                    <div className="relative flex items-center">
+                      <input
+                        type="text"
+                        placeholder="es. Crescita attiva, Germoglio"
+                        value={newPlantForm.status || ""}
+                        onChange={e => setNewPlantForm({ ...newPlantForm, status: e.target.value })}
+                        className="w-full p-2 pr-10 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 text-xs bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setIsEditStatusDropdownOpen(!isEditStatusDropdownOpen)}
+                        className="absolute right-1 w-7 h-7 border border-[#e4e8e1] rounded-lg bg-stone-50/80 hover:bg-stone-100 text-sage-500 transition-colors flex items-center justify-center cursor-pointer"
+                        title="Seleziona predefiniti"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+
+                      {isEditStatusDropdownOpen && (
+                        <div className="absolute top-full right-0 left-0 mt-1 bg-white border border-[#e4e8e1] rounded-xl shadow-lg z-[60] max-h-48 overflow-y-auto py-1 font-sans">
+                          {[
+                            "Crescita attiva",
+                            "Giovane germoglio",
+                            "Stabile",
+                            "Florido / fioritura",
+                            "Stato di sofferenza / stress",
+                            "In recupero",
+                            "Taleazione / propagazione"
+                          ].map(opt => (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() => {
+                                setNewPlantForm({ ...newPlantForm, status: opt });
+                                setIsEditStatusDropdownOpen(false);
+                              }}
+                              className="w-full text-left px-3 py-2 text-xs text-stone-700 hover:bg-emerald-50 hover:text-emerald-800 transition-colors"
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex flex-col gap-1">
@@ -4208,6 +4403,160 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* --- MODALE EXTRA: ELENCO RAPIDO ATTIVITÀ DA FARE --- */}
+      <AnimatePresence>
+        {isTodoActivitiesModalOpen && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-xl w-full space-y-4 my-auto text-left shadow-2xl relative"
+            >
+              <div className="flex justify-between items-center pb-3 border-b border-[#e4e8e1]">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-amber-50 rounded-xl text-amber-800">
+                    <CalendarClock className="w-5 h-5 text-amber-700" />
+                  </div>
+                  <div>
+                    <h3 className="font-serif font-black text-[#2d3a2e] text-lg">
+                      Attività in Sospeso
+                    </h3>
+                    <p className="text-[10px] font-mono text-[#8e9299] uppercase tracking-wider">
+                      Cose da fare e tempistiche di scadenza
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsTodoActivitiesModalOpen(false)}
+                  className="p-1.5 hover:bg-stone-100 rounded-full text-stone-400 hover:text-stone-700 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Lista delle attività "todo" */}
+              <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+                {(() => {
+                  const todoActivities = state.activities
+                    .filter(a => a.status === "todo")
+                    .map(activity => {
+                      const plant = state.plants.find(p => p.id === activity.plantId);
+                      const dueInfo = getRelativeDueTime(activity.dueDate);
+                      
+                      const targetTime = activity.dueDate ? new Date(activity.dueDate).getTime() : Infinity;
+                      
+                      return {
+                        activity,
+                        plant,
+                        dueInfo,
+                        targetTime
+                      };
+                    })
+                    .sort((a, b) => a.targetTime - b.targetTime);
+
+                  if (todoActivities.length === 0) {
+                    return (
+                      <div className="text-center py-8 text-stone-500">
+                        <p className="font-serif italic text-base text-[#7e8c69]">Ottimo lavoro! 🎉</p>
+                        <p className="text-xs font-mono mt-1 text-[#8e9299]">Nessuna attività programmata da svolgere al momento.</p>
+                      </div>
+                    );
+                  }
+
+                  return todoActivities.map(({ activity, plant, dueInfo }) => {
+                    const isGlobal = activity.plantId === "global" || !plant;
+                    
+                    let typeBadgeColor = "bg-stone-100 text-stone-700 border-stone-200";
+                    if (activity.type === "annaffiatura") typeBadgeColor = "bg-blue-50 text-blue-700 border-blue-200";
+                    else if (activity.type === "concimazione") typeBadgeColor = "bg-amber-50 text-amber-700 border-amber-200";
+                    else if (activity.type === "rinvaso") typeBadgeColor = "bg-orange-50 text-orange-700 border-orange-200";
+                    else if (activity.type === "propagazione") typeBadgeColor = "bg-emerald-50 text-emerald-700 border-emerald-200";
+
+                    return (
+                      <div 
+                        key={activity.id}
+                        className="flex items-center gap-3 p-3 bg-[#fafbf9] border border-[#e4e8e1] rounded-2xl hover:border-sage-300 hover:shadow-xs transition-all"
+                      >
+                        {/* Immagine pianta / Icona */}
+                        {isGlobal ? (
+                          <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-800 flex items-center justify-center border border-emerald-100 shadow-3xs flex-shrink-0">
+                            <BookOpen className="w-5 h-5 text-emerald-750" />
+                          </div>
+                        ) : (
+                          <img
+                            src={plant.imageUrl}
+                            alt={plant.name}
+                            referrerPolicy="no-referrer"
+                            className="w-12 h-12 object-cover rounded-xl border border-stone-200 shadow-3xs flex-shrink-0"
+                          />
+                        )}
+
+                        {/* Dettagli della pianta e dell'attività */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline gap-1.5 flex-wrap">
+                            <span className="font-serif font-black text-sm text-[#2d3a27] truncate">
+                              {isGlobal ? "Orto Globale" : plant.name}
+                            </span>
+                            {!isGlobal && plant.nickname && (
+                              <span className="text-xs text-stone-500 italic font-medium">
+                                "{plant.nickname}"
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="text-xs font-semibold text-stone-700 mt-0.5 truncate flex items-center gap-1.5 font-sans">
+                            <span>{activity.title}</span>
+                            <span className={`text-[9px] font-mono font-bold px-1.5 py-0.2 border rounded-full uppercase ${typeBadgeColor}`}>
+                              {activity.type}
+                            </span>
+                          </div>
+
+                          {/* Tempistica di scadenza */}
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 mt-1 font-mono text-[10px]">
+                            <span className="capitalize font-bold text-[#7e8c69]">
+                              📅 {dueInfo.weekday}
+                            </span>
+                            <span className={`font-bold ${dueInfo.isExpired ? 'text-red-600' : 'text-amber-700'}`}>
+                              ⏱️ {dueInfo.text}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Bottone per completare rapidamente */}
+                        <button
+                          type="button"
+                          onClick={() => handleToggleActivity(activity.id)}
+                          className="p-2 hover:bg-emerald-50 hover:text-emerald-700 rounded-xl border border-stone-200 hover:border-emerald-200 text-stone-400 cursor-pointer transition-all flex items-center justify-center flex-shrink-0 active:scale-95 shadow-3xs hover:shadow-2xs"
+                          title="Segna come completato"
+                        >
+                          <Square className="w-5 h-5" />
+                        </button>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+
+              {/* Footer */}
+              <div className="pt-3 border-t border-[#e4e8e1] flex justify-between items-center">
+                <span className="text-[10px] font-mono text-stone-400">
+                  Clicca sul quadrato di spunta a destra per completare l'attività
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsTodoActivitiesModalOpen(false)}
+                  className="px-4 py-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-mono font-bold rounded-xl transition-colors cursor-pointer"
+                >
+                  Chiudi
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

@@ -45,11 +45,11 @@ export interface Plant {
   name: string;
   nickname: string;
   species: string;
-  origin: PlantOrigin;
+  origin: string;
   startDate: string; // ISO String or YYYY-MM-DD
   description: string;
   imageUrl: string;
-  status: PlantStatus;
+  status: string;
   health: number; // 0 to 100
   notes: string;
   tags: string[];
