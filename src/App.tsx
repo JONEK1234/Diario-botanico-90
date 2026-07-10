@@ -68,6 +68,21 @@ const toLocalDatetimeString = (isoString: string): string => {
   return `${year}-${month}-${day}T${hours}:${minutes}`;
 };
 
+const getTimelineStartForEntry = (plant: Plant, entryDate: string): string => {
+  const originalStart = plant.originalStartDate || plant.startDate;
+  const diary = plant.diary || [];
+  const resetEntries = diary.filter(d => d.eventTitle === "Azzeramento Ciclo di Crescita" || d.id?.startsWith("diary-reset-"));
+  if (resetEntries.length === 0) {
+    return entryDate < plant.startDate ? originalStart : plant.startDate;
+  }
+  const sortedResets = [...resetEntries].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const latestReset = sortedResets[0];
+  if (new Date(entryDate).getTime() < new Date(latestReset.date).getTime()) {
+    return originalStart;
+  }
+  return plant.startDate;
+};
+
 // --- GRUPPO STRUMENTALE COMPRESSIONE IMMAGINI (Previene blocchi DB Firestore 1MB) ---
 const compressImage = (base64Str: string, maxWidth = 500, quality = 0.5): Promise<string> => {
   return new Promise((resolve) => {
@@ -231,13 +246,51 @@ export default function App() {
 
   // 1. CARICAMENTO STATO INIZIALE (Supporto Standalone Offline ed State Management locale)
   const getInitialState = (): JournalState => {
+    const computeAgeAtDate = (startDateStr: string, pastDateStr: string): number => {
+      try {
+        const start = new Date(startDateStr.split("T")[0]);
+        const past = new Date(pastDateStr.split("T")[0]);
+        const diffTime = past.getTime() - start.getTime();
+        return Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+      } catch (_) {
+        return 0;
+      }
+    };
+
+    const migrateLoadedState = (parsed: any): any => {
+      if (parsed && parsed.plants) {
+        parsed.plants = parsed.plants.map((p: any) => {
+          const originalStartDate = p.originalStartDate || p.startDate;
+          const diary = (p.diary || []).map((entry: any) => {
+            const startToUse = getTimelineStartForEntry(p, entry.date);
+            const calculated = computeAgeAtDate(startToUse, entry.date);
+            const isResetEvent = entry.eventTitle === "Azzeramento Ciclo di Crescita" || entry.id?.startsWith("diary-reset-");
+            
+            if (entry.plantAgeAtMoment === undefined || (!isResetEvent && entry.plantAgeAtMoment === 0 && calculated > 0)) {
+              return {
+                ...entry,
+                plantAgeAtMoment: calculated
+              };
+            }
+            return entry;
+          });
+          return {
+            ...p,
+            originalStartDate,
+            diary
+          };
+        });
+      }
+      return parsed;
+    };
+
     // Controlla se ci sono dati iniettati dal compilatore standalone
     const injectedData = (window as any).__MY_APP_INITIAL_DATA__;
     if (injectedData && injectedData.plants) {
-      return {
+      return migrateLoadedState({
         ...injectedData,
         smartTrackers: injectedData.smartTrackers || []
-      };
+      });
     }
 
     // Controlla se la share URL contiene dati compressi
@@ -257,12 +310,12 @@ export default function App() {
         }
         const parsed = JSON.parse(decoded);
         if (parsed.plants) {
-          return {
+          return migrateLoadedState({
             plants: parsed.plants,
             activities: parsed.activities || [],
             smartTrackers: parsed.smartTrackers || [],
             settings: parsed.settings || { userName: "Ospite", gardenName: "Giardino Condiviso", offlineMode: false }
-          };
+          });
         }
       } catch (e) {
         console.error("Errore decodifica share link:", e);
@@ -292,7 +345,7 @@ export default function App() {
 
     if (saved) {
       try {
-        const parsed = JSON.parse(saved);
+        let parsed = JSON.parse(saved);
         if (parsed.plants && parsed.plants.length > 0) {
           // Migrazione da Elena a Samuel
           if (!parsed.settings) {
@@ -311,9 +364,10 @@ export default function App() {
               parsed.settings.gardenName = parsed.settings.gardenName.replace(/di Samuel di Samuel/g, "di Samuel");
             }
           }
+          const migrated = migrateLoadedState(parsed);
           return {
-            ...parsed,
-            smartTrackers: parsed.smartTrackers !== undefined ? parsed.smartTrackers : defaultTrackersPreset
+            ...migrated,
+            smartTrackers: migrated.smartTrackers !== undefined ? migrated.smartTrackers : defaultTrackersPreset
           };
         }
       } catch (e) {
@@ -322,7 +376,7 @@ export default function App() {
     }
 
     // Fallback sui presets magnifici creati
-    return {
+    return migrateLoadedState({
       plants: PRESET_PLANTS,
       activities: PRESET_ACTIVITIES,
       smartTrackers: defaultTrackersPreset,
@@ -331,7 +385,7 @@ export default function App() {
         gardenName: "Orto Botanico di Samuel",
         offlineMode: false,
       }
-    };
+    });
   };
 
   const [state, setState] = useState<JournalState>(() => {
@@ -388,6 +442,7 @@ export default function App() {
   const [isShareOpen, setIsShareOpen] = useState(false);
   const [generatedShareUrl, setGeneratedShareUrl] = useState("");
   const [isCopiedSuccess, setIsCopiedSuccess] = useState(false);
+  const [isResetRequested, setIsResetRequested] = useState(false);
 
   // Connection states for Live Synchronization and PWA Installation
   const [activeShareId, setActiveShareId] = useState<string | null>(() => {
@@ -631,6 +686,7 @@ export default function App() {
   // Riferimenti per Auto-Scroll Smooth
   const detailsSectionRef = useRef<HTMLDivElement>(null);
   const latestNoteRef = useRef<HTMLDivElement>(null);
+  const oldestNoteRef = useRef<HTMLDivElement>(null);
 
   // Form Pianta Nuova / Modifica
   const [newPlantForm, setNewPlantForm] = useState<Partial<Plant>>(() => {
@@ -1204,13 +1260,16 @@ export default function App() {
       health: newPlantForm.health || 100,
       notes: newPlantForm.notes || "",
       tags: newPlantForm.tags || [],
+      lastDataModifiedAt: new Date().toISOString(),
+      originalStartDate: newPlantForm.startDate || new Date().toISOString().split("T")[0],
       diary: [
         {
           id: "log-" + Date.now(),
           date: new Date().toISOString(),
           eventTitle: "Aggiunta del diario",
           notes: "Apertura ufficiale delle osservazioni e del diario di crescita in Flora.",
-          category: "creazione"
+          category: "creazione",
+          plantAgeAtMoment: calculateAge(newPlantForm.startDate || new Date().toISOString().split("T")[0])
         }
       ]
     };
@@ -1242,6 +1301,22 @@ export default function App() {
     e.preventDefault();
     if (!selectedPlant) return;
 
+    const lastDataModifiedAt = newPlantForm.lastDataModifiedAt || new Date().toISOString();
+
+    let additionalDiaryEntries: DiaryEntry[] = [];
+    if (isResetRequested) {
+      const ageBeforeReset = calculateAge(selectedPlant.startDate);
+      const resetEntry: DiaryEntry = {
+        id: "diary-reset-" + Date.now(),
+        date: new Date().toISOString(),
+        eventTitle: "Azzeramento Ciclo di Crescita",
+        notes: `Il contatore dei giorni di crescita della pianta è stato azzerato.\nEtà raggiunta prima dell'azzeramento: ${ageBeforeReset} giorni.`,
+        category: "evoluzione",
+        plantAgeAtMoment: ageBeforeReset
+      };
+      additionalDiaryEntries.push(resetEntry);
+    }
+
     setState(prev => ({
       ...prev,
       plants: prev.plants.map(p => {
@@ -1253,18 +1328,24 @@ export default function App() {
             species: newPlantForm.species || p.species,
             origin: newPlantForm.origin || p.origin,
             startDate: newPlantForm.startDate || p.startDate,
+            originalStartDate: p.originalStartDate || p.startDate,
             description: newPlantForm.description || p.description,
             imageUrl: newPlantForm.imageUrl || p.imageUrl,
             status: newPlantForm.status || p.status,
             health: newPlantForm.health ?? p.health,
             notes: newPlantForm.notes || p.notes,
-            tags: newPlantForm.tags || p.tags
+            tags: newPlantForm.tags || p.tags,
+            lastDataModifiedAt: lastDataModifiedAt,
+            diary: additionalDiaryEntries.length > 0 
+              ? [...additionalDiaryEntries, ...(p.diary || [])] 
+              : p.diary
           };
         }
         return p;
       })
     }));
 
+    setIsResetRequested(false);
     setIsEditPlantOpen(false);
     showToast(`Aggiornato ${selectedPlant.nickname} nel diario core.`);
   };
@@ -1273,8 +1354,12 @@ export default function App() {
     e.preventDefault();
     if (!selectedPlant) return;
 
-    const ageDays = calculateAge(newPlantForm.startDate || new Date().toISOString().split("T")[0]);
-    const summaryNotes = `Dati storicizzati al ${new Date().toLocaleDateString("it-IT")}:\n• Salute: ${newPlantForm.health ?? selectedPlant.health}%\n• Stato: ${newPlantForm.status ?? selectedPlant.status}\n• Età: ${ageDays} giorni\n• Descrizione: ${newPlantForm.description || "Nessuna descrizione."}\n• Origine: ${newPlantForm.origin || selectedPlant.origin}`;
+    const lastDataModifiedAt = newPlantForm.lastDataModifiedAt || new Date().toISOString();
+    const formattedModDate = new Date(lastDataModifiedAt).toLocaleDateString("it-IT");
+
+    const ageBeforeReset = calculateAge(selectedPlant.startDate);
+    const ageDays = isResetRequested ? ageBeforeReset : calculateAge(newPlantForm.startDate || new Date().toISOString().split("T")[0]);
+    const summaryNotes = `Dati inseriti/modificati il ${formattedModDate}:\n• Salute: ${newPlantForm.health ?? selectedPlant.health}%\n• Stato: ${newPlantForm.status ?? selectedPlant.status}\n• Età: ${ageDays} giorni\n• Descrizione: ${newPlantForm.description || "Nessuna descrizione."}\n• Origine: ${newPlantForm.origin || selectedPlant.origin}`;
 
     const snapEntry: DiaryEntry = {
       id: "diary-snap-" + Date.now(),
@@ -1282,8 +1367,22 @@ export default function App() {
       eventTitle: `Memoria Storica: ${newPlantForm.nickname || selectedPlant.nickname}`,
       notes: summaryNotes,
       imageUrl: newPlantForm.imageUrl || selectedPlant.imageUrl,
-      category: "evoluzione"
+      category: "evoluzione",
+      plantAgeAtMoment: ageDays
     };
+
+    let additionalDiaryEntries: DiaryEntry[] = [];
+    if (isResetRequested) {
+      const resetEntry: DiaryEntry = {
+        id: "diary-reset-" + Date.now(),
+        date: new Date().toISOString(),
+        eventTitle: "Azzeramento Ciclo di Crescita",
+        notes: `Il contatore dei giorni di crescita della pianta è stato azzerato.\nEtà raggiunta prima dell'azzeramento: ${ageBeforeReset} giorni.`,
+        category: "evoluzione",
+        plantAgeAtMoment: ageBeforeReset
+      };
+      additionalDiaryEntries.push(resetEntry);
+    }
 
     setState(prev => ({
       ...prev,
@@ -1296,19 +1395,22 @@ export default function App() {
             species: newPlantForm.species || p.species,
             origin: newPlantForm.origin || p.origin,
             startDate: newPlantForm.startDate || p.startDate,
+            originalStartDate: p.originalStartDate || p.startDate,
             description: newPlantForm.description || p.description,
             imageUrl: newPlantForm.imageUrl || p.imageUrl,
             status: newPlantForm.status || p.status,
             health: newPlantForm.health ?? p.health,
             notes: newPlantForm.notes || p.notes,
             tags: newPlantForm.tags || p.tags,
-            diary: [snapEntry, ...(p.diary || [])]
+            lastDataModifiedAt: lastDataModifiedAt,
+            diary: [snapEntry, ...additionalDiaryEntries, ...(p.diary || [])]
           };
         }
         return p;
       })
     }));
 
+    setIsResetRequested(false);
     setIsEditPlantOpen(false);
     showToast(`Aggiornato ${selectedPlant.nickname} e registrata una nuova tappa storica con successo! 📜🌿`);
   };
@@ -1339,7 +1441,8 @@ export default function App() {
       nickname: newNickname,
       diary: duplicatedDiary,
       savedNotes: duplicatedSavedNotes,
-      startDate: originalPlant.startDate || new Date().toISOString().split("T")[0]
+      startDate: originalPlant.startDate || new Date().toISOString().split("T")[0],
+      originalStartDate: originalPlant.originalStartDate || originalPlant.startDate || new Date().toISOString().split("T")[0]
     };
 
     // Trova e duplica le attività collegate nell'agenda
@@ -1373,8 +1476,10 @@ export default function App() {
       status: selectedPlant.status,
       health: selectedPlant.health,
       notes: selectedPlant.notes,
-      tags: selectedPlant.tags
+      tags: selectedPlant.tags,
+      lastDataModifiedAt: selectedPlant.lastDataModifiedAt || new Date().toISOString().split("T")[0]
     });
+    setIsResetRequested(false);
     setIsEditPlantOpen(true);
   };
 
@@ -1391,7 +1496,8 @@ export default function App() {
             date: new Date().toISOString(),
             eventTitle: "Addio a " + p.name,
             notes: notes || "La pianta purtroppo ci ha lasciato. Conservata con affetto nel memoriale botanico.",
-            category: "evoluzione"
+            category: "evoluzione",
+            plantAgeAtMoment: calculateAge(p.startDate)
           };
           return {
             ...p,
@@ -1427,7 +1533,8 @@ export default function App() {
             date: new Date().toISOString(),
             eventTitle: "Ritorno in cura attiva",
             notes: "La pianta è stata ripristinata e riportata alla serra attiva dell'erbario!",
-            category: "evoluzione"
+            category: "evoluzione",
+            plantAgeAtMoment: calculateAge(p.startDate)
           };
           return {
             ...p,
@@ -1599,7 +1706,8 @@ export default function App() {
       title: title,
       status: "todo",
       dueDate: dueDate || new Date().toISOString().split("T")[0],
-      priority: priority
+      priority: priority,
+      createdAt: new Date().toISOString()
     };
     setState(prev => ({
       ...prev,
@@ -1856,7 +1964,8 @@ export default function App() {
       title: newActivityForm.title,
       status: "todo",
       dueDate: newActivityForm.dueDate || new Date().toISOString().split("T")[0],
-      priority: newActivityForm.priority
+      priority: newActivityForm.priority,
+      createdAt: new Date().toISOString()
     };
 
     setState(prev => ({
@@ -1882,13 +1991,20 @@ export default function App() {
       return;
     }
 
+    const entryDate = newDiaryForm.date || new Date().toISOString();
+    const timelineStart = selectedPlant
+      ? getTimelineStartForEntry(selectedPlant, entryDate)
+      : new Date().toISOString();
+    const ageAtMoment = selectedPlant ? calculateAgeAtDate(timelineStart, entryDate) : 0;
+
     const newEntry: DiaryEntry = {
       id: "diary-" + Date.now(),
-      date: newDiaryForm.date || new Date().toISOString(),
+      date: entryDate,
       eventTitle: newDiaryForm.eventTitle,
       notes: newDiaryForm.notes,
       imageUrl: newDiaryForm.imageUrl || undefined,
-      category: newDiaryForm.category
+      category: newDiaryForm.category,
+      plantAgeAtMoment: ageAtMoment
     };
 
     setState(prev => ({
@@ -1944,6 +2060,19 @@ export default function App() {
 
     const isCompleting = act.status === "todo";
 
+    // Calcoliamo i dettagli delle date per l'attività completata
+    const insertionDateStr = act.createdAt 
+      ? new Date(act.createdAt).toLocaleDateString("it-IT") 
+      : undefined;
+    const dueDateStr = act.dueDate 
+      ? new Date(act.dueDate).toLocaleDateString("it-IT") 
+      : undefined;
+
+    let dateDetails = `Scadenza: ${dueDateStr || "Nessuna"}.`;
+    if (insertionDateStr) {
+      dateDetails = `Inserita il: ${insertionDateStr}. ${dateDetails}`;
+    }
+
     setState(prev => ({
       ...prev,
       activities: prev.activities.map(a => {
@@ -1952,7 +2081,9 @@ export default function App() {
             ...a,
             status: isCompleting ? "completed" : "todo",
             completedAt: isCompleting ? new Date().toISOString() : undefined,
-            completedNotes: isCompleting ? "Azione spuntata dall'elenco rapido Flora." : undefined
+            completedNotes: isCompleting 
+              ? `Azione spuntata dall'elenco rapido Flora. (${dateDetails})` 
+              : undefined
           };
         }
         return a;
@@ -1964,8 +2095,9 @@ export default function App() {
             id: "auto-act-" + Date.now(),
             date: new Date().toISOString(),
             eventTitle: `Svolta Attività: ${act.title}`,
-            notes: "Attività completata da calendario dei doveri botanici.",
-            category: act.type as any
+            notes: `Attività completata da calendario dei doveri botanici.\n(${dateDetails})`,
+            category: act.type as any,
+            plantAgeAtMoment: calculateAge(p.startDate)
           };
           return {
             ...p,
@@ -1983,14 +2115,15 @@ export default function App() {
   const handleCreateActivity = (type: CareActivity["type"], title: string, priority: CareActivity["priority"]) => {
     if (!selectedPlantId) return;
     const newAct: CareActivity = {
-      id: "act-" + Date.now(),
-      plantId: selectedPlantId,
-      type: type,
-      title: title,
-      status: "todo",
-      dueDate: new Date().toISOString().split("T")[0],
-      priority: priority
-    };
+       id: "act-" + Date.now(),
+       plantId: selectedPlantId,
+       type: type,
+       title: title,
+       status: "todo",
+       dueDate: new Date().toISOString().split("T")[0],
+       priority: priority,
+       createdAt: new Date().toISOString()
+     };
 
     setState(prev => ({
       ...prev,
@@ -3241,11 +3374,18 @@ export default function App() {
                         </div>
                       )}
 
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[10px] font-mono tracking-wider uppercase text-sage-400">Soprannome:</span>
-                        <span className="text-lg font-handwritten text-[#7e8c69] font-bold">
-                          {selectedPlant.nickname}
-                        </span>
+                      <div className="flex flex-wrap items-center justify-between gap-2 mt-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono tracking-wider uppercase text-sage-400">Soprannome:</span>
+                          <span className="text-lg font-handwritten text-[#7e8c69] font-bold">
+                            {selectedPlant.nickname}
+                          </span>
+                        </div>
+                        {selectedPlant.lastDataModifiedAt && (
+                          <div className="text-[9px] font-mono text-stone-400 bg-stone-50 border border-stone-100 rounded-md px-1.5 py-0.5">
+                            Dati aggiornati il: {new Date(selectedPlant.lastDataModifiedAt).toLocaleDateString("it-IT")}
+                          </div>
+                        )}
                       </div>
 
                       <p className="text-xs text-sage-650 leading-relaxed mt-4 font-normal whitespace-pre-wrap">
@@ -3350,11 +3490,11 @@ export default function App() {
                     {selectedPlant.diary && selectedPlant.diary.length > 0 && (
                       <button
                         onClick={() => {
-                          latestNoteRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-                          showToast("Scorrendo all'ultima nota registrata...");
+                          oldestNoteRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                          showToast("Scorrendo alla prima nota (meno recente)... 📜🌿");
                         }}
                         className="p-1.5 bg-white border border-[#e2e2d8] hover:bg-sage-50 rounded-full text-sage-600 transition-all cursor-pointer shadow-sm flex items-center justify-center"
-                        title="Vai all'ultima nota registrata"
+                        title="Vai alla prima nota (meno recente)"
                       >
                         <ArrowDown className="w-4 h-4" />
                       </button>
@@ -3374,7 +3514,7 @@ export default function App() {
                     return (
                       <motion.div
                         key={entry.id}
-                        ref={index === 0 ? latestNoteRef : undefined}
+                        ref={index === selectedPlant.diary.length - 1 ? oldestNoteRef : (index === 0 ? latestNoteRef : undefined)}
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: index * 0.05 }}
@@ -3449,19 +3589,24 @@ export default function App() {
 
                         {/* INTERACTIVE DAYS OF LIFE BADGE */}
                         {(() => {
-                          const ageAtMoment = calculateAgeAtDate(selectedPlant.startDate, entry.date);
-                          const currentAgeOfPlant = calculateAge(selectedPlant.startDate);
-                          const daysPassed = Math.max(0, currentAgeOfPlant - ageAtMoment);
+                          const timelineStartForEntry = getTimelineStartForEntry(selectedPlant, entry.date);
+                          const ageAtMoment = entry.plantAgeAtMoment !== undefined 
+                            ? entry.plantAgeAtMoment 
+                            : calculateAgeAtDate(timelineStartForEntry, entry.date);
+
+                          const daysPassed = calculateAgeAtDate(entry.date, new Date().toISOString());
+                          const originalTimelineStart = selectedPlant.originalStartDate || selectedPlant.startDate;
+                          const calculatedAgeToday = calculateAge(originalTimelineStart);
                           const isToggled = !!toggledDiaryAges[entry.id];
 
                           return (
                             <div 
                               onClick={(e) => {
-                                e.stopPropagation();
-                                setToggledDiaryAges(prev => ({
-                                  ...prev,
-                                  [entry.id]: !prev[entry.id]
-                                }));
+                                  e.stopPropagation();
+                                  setToggledDiaryAges(prev => ({
+                                    ...prev,
+                                    [entry.id]: !prev[entry.id]
+                                  }));
                               }}
                               className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-mono font-bold transition-all cursor-pointer border select-none active:scale-95 shadow-2xs hover:scale-[1.01]"
                               style={{
@@ -3474,7 +3619,7 @@ export default function App() {
                               <span className="text-xs">{isToggled ? "🔄" : "🌱"}</span>
                               {isToggled ? (
                                 <span>
-                                  Età della pianta ad oggi: <strong className="text-emerald-800 font-extrabold">{currentAgeOfPlant} giorni</strong> <span className="opacity-75 font-normal text-emerald-600">({daysPassed} gg passati da allora)</span>
+                                  Età della pianta ad oggi: <strong className="text-emerald-800 font-extrabold">{calculatedAgeToday} giorni</strong> <span className="opacity-75 font-normal text-emerald-600">({daysPassed} gg passati da allora)</span>
                                 </span>
                               ) : (
                                 <span>
@@ -3518,6 +3663,18 @@ export default function App() {
                 Agenda Prossimi Giorni
               </h3>
               <div className="flex items-center gap-1.5">
+                {selectedPlant && selectedPlant.diary && selectedPlant.diary.length > 0 && (
+                  <button
+                    onClick={() => {
+                      latestNoteRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      showToast("Scorrendo all'ultima nota (più recente)... 📜🌿");
+                    }}
+                    className="p-1 hover:bg-sage-50 text-sage-600 border border-[#e2e2d8] hover:border-sage-400 bg-white rounded-full cursor-pointer transition-all flex items-center justify-center"
+                    title="Vai all'ultima nota (più recente)"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 {!isReadOnlyMode && (
                   <button
                     onClick={() => setIsAddActivityOpen(true)}
@@ -3712,7 +3869,10 @@ export default function App() {
                         <Edit className="w-3 h-3" />
                       </button>
                     </div>
-                    <p className="text-[9px] text-[#8e9299] font-mono">Chiusa il {a.completedAt ? new Date(a.completedAt).toLocaleDateString("it-IT") : ""}</p>
+                    <div className="text-[9px] text-[#8e9299] font-mono flex flex-wrap gap-1 md:gap-2">
+                      {a.createdAt && <span>Inserita: {new Date(a.createdAt).toLocaleDateString("it-IT")}</span>}
+                      <span>• Chiusa il {a.completedAt ? new Date(a.completedAt).toLocaleDateString("it-IT") : ""}</span>
+                    </div>
                     {a.completedNotes && <p className="italic font-serif whitespace-pre-wrap">« {a.completedNotes} »</p>}
                   </div>
                 ));
@@ -4279,7 +4439,25 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-col gap-1">
-                    <label className="font-mono text-[10px] text-sage-400 uppercase">Data di accoglienza</label>
+                    <label className="font-mono text-[10px] text-sage-400 uppercase flex justify-between items-center">
+                      <span>Data di accoglienza</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const todayStr = new Date().toISOString().split("T")[0];
+                          setNewPlantForm(prev => ({
+                            ...prev,
+                            startDate: todayStr
+                          }));
+                          setIsResetRequested(true);
+                          showToast("Giorni azzerati! Salva le modifiche per registrare l'azzeramento in memoria storica.");
+                        }}
+                        className="text-emerald-700 hover:text-emerald-800 hover:underline font-bold font-mono text-[9px] flex items-center gap-1 cursor-pointer transition-all uppercase"
+                        title="Azzera i giorni di crescita impostando la data di accoglienza a oggi. I dati storici precedenti non verranno alterati!"
+                      >
+                        <RefreshCcw className="w-2.5 h-2.5 animate-pulse" /> Azzera Giorni
+                      </button>
+                    </label>
                     <input
                       type="date"
                       value={newPlantForm.startDate || ""}
@@ -4287,6 +4465,20 @@ export default function App() {
                       className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none"
                     />
                   </div>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <label className="font-mono text-[10px] text-[#7e8c69] uppercase font-bold">Data del rilevamento / Inserimento dati</label>
+                  <input
+                    type="date"
+                    value={newPlantForm.lastDataModifiedAt ? newPlantForm.lastDataModifiedAt.split("T")[0] : new Date().toISOString().split("T")[0]}
+                    onChange={e => setNewPlantForm({ ...newPlantForm, lastDataModifiedAt: e.target.value })}
+                    className="p-2 border border-emerald-200 bg-emerald-50/5 rounded-xl focus:outline-none focus:border-emerald-500 font-mono text-xs"
+                    title="Imposta la data in cui hai effettivamente rilevato o modificato questi dettagli (es. salute, descrizione, foto)"
+                  />
+                  <p className="text-[9px] text-[#8e9299] font-mono leading-tight">
+                    Questa data verrà memorizzata e usata quando storicizzerai i dati sul diario.
+                  </p>
                 </div>
 
                 <div className="flex flex-col gap-1">
@@ -5623,6 +5815,9 @@ export default function App() {
                                   <div className="text-[9px] font-mono text-stone-400 flex items-center gap-2 flex-wrap pt-1">
                                     <span className="bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded-md font-bold">Inizio: {formatLocalDate(effectiveStartDate)}</span>
                                     <span className="bg-stone-100 text-stone-600 px-1.5 py-0.5 rounded-md font-bold">Cura attiva fin: {targetDate}</span>
+                                    {t.isCompleted && t.completedAt && (
+                                      <span className="bg-[#7e8c69]/90 text-white px-1.5 py-0.5 rounded-md font-bold">Archiviato il: {new Date(t.completedAt).toLocaleDateString("it-IT")}</span>
+                                    )}
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-1.5">
@@ -5701,6 +5896,7 @@ export default function App() {
                                 <div className="text-[9px] font-mono text-stone-400 flex items-center gap-2 flex-wrap">
                                   <span>Priorità: {a.priority}</span>
                                   <span>• Scadenza prevista: {a.dueDate}</span>
+                                  {a.createdAt && <span>• Inserita: {new Date(a.createdAt).toLocaleDateString("it-IT")}</span>}
                                   {a.completedAt && <span>• Completata: {new Date(a.completedAt).toLocaleDateString("it-IT")}</span>}
                                 </div>
                               </div>
@@ -6166,8 +6362,10 @@ export default function App() {
                       status: plant.status,
                       health: plant.health,
                       notes: plant.notes,
-                      tags: plant.tags
+                      tags: plant.tags,
+                      lastDataModifiedAt: plant.lastDataModifiedAt || new Date().toISOString().split("T")[0]
                     });
+                    setIsResetRequested(false);
                     setIsEditPlantOpen(true);
                   }}
                   className="w-full py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-mono text-xs rounded-xl font-bold cursor-pointer transition-all flex items-center justify-center gap-2 shadow-xs"

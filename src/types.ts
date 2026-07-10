@@ -29,6 +29,7 @@ export interface DiaryEntry {
   notes: string;
   imageUrl?: string;
   category?: "creazione" | "annaffiatura" | "concimazione" | "rinvaso" | "generale" | "osservazione" | "evoluzione";
+  plantAgeAtMoment?: number;
 }
 
 export interface SavedNote {
@@ -58,6 +59,8 @@ export interface Plant {
   deathDate?: string;
   deathNotes?: string;
   savedNotes?: SavedNote[];
+  lastDataModifiedAt?: string; // ISO String or YYYY-MM-DD representing when plant data was last modified
+  originalStartDate?: string; // The very first start date of the plant, preserved across edits/resets
 }
 
 export interface CareActivity {
@@ -70,6 +73,7 @@ export interface CareActivity {
   priority: "bassa" | "media" | "alta";
   completedAt?: string; // ISO String
   completedNotes?: string;
+  createdAt?: string; // ISO String
 }
 
 export interface SmartTracker {
