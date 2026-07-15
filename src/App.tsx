@@ -83,85 +83,6 @@ const getTimelineStartForEntry = (plant: Plant, entryDate: string): string => {
   return plant.startDate;
 };
 
-// --- IMMAGINI ESTERNE SU FIRESTORE PER EVITARE LIMITE 1MB ---
-const imageCache: Record<string, string> = {};
-
-const useFirebaseImage = (imageUrl: string | undefined) => {
-  const [src, setSrc] = useState<string | undefined>(imageUrl);
-  const [loading, setLoading] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (!imageUrl) {
-      setSrc(undefined);
-      return;
-    }
-
-    if (imageUrl.startsWith("db_image:")) {
-      const imageId = imageUrl.replace("db_image:", "");
-      if (imageCache[imageId]) {
-        setSrc(imageCache[imageId]);
-        return;
-      }
-
-      setLoading(true);
-      let isMounted = true;
-      const fetchImg = async () => {
-        try {
-          const { doc, getDoc } = await import("firebase/firestore");
-          const { db } = await import("./firebase");
-          const imageDocRef = doc(db, "shares", "samuel-garden", "images", imageId);
-          const snap = await getDoc(imageDocRef);
-          if (isMounted) {
-            if (snap.exists()) {
-              const data = snap.data();
-              if (data && data.base64) {
-                imageCache[imageId] = data.base64;
-                setSrc(data.base64);
-              }
-            }
-          }
-        } catch (err) {
-          console.error("Failed to load image from Firestore:", err);
-        } finally {
-          if (isMounted) {
-            setLoading(false);
-          }
-        }
-      };
-      fetchImg();
-
-      return () => {
-        isMounted = false;
-      };
-    } else {
-      setSrc(imageUrl);
-    }
-  }, [imageUrl]);
-
-  return { src, loading };
-};
-
-const SafeImage = ({ src, alt, className, style, ...props }: any) => {
-  const { src: resolvedSrc, loading } = useFirebaseImage(src);
-  if (loading) {
-    return (
-      <div className={`${className} flex items-center justify-center bg-stone-100/70 border border-[#e2e2d8] text-sage-400 font-mono select-none`} style={style}>
-        <span className="text-[10px] animate-pulse">Caricamento... ⏳</span>
-      </div>
-    );
-  }
-  return (
-    <img 
-      src={resolvedSrc || "https://images.unsplash.com/photo-1517256064527-09c53b2d0bc6?q=80&w=350"} 
-      alt={alt} 
-      className={className} 
-      style={style} 
-      referrerPolicy="no-referrer"
-      {...props} 
-    />
-  );
-};
-
 // --- GRUPPO STRUMENTALE COMPRESSIONE IMMAGINI (Previene blocchi DB Firestore 1MB) ---
 const compressImage = (base64Str: string, maxWidth = 500, quality = 0.5): Promise<string> => {
   return new Promise((resolve) => {
@@ -222,45 +143,18 @@ const compressFile = (file: File, maxWidth = 350, quality = 0.25): Promise<strin
   });
 };
 
-// Ottimizza e comprime ricorsivamente tutte le immagini presenti nello stato, salvandole in Firestore in modo separato per evitare il limite di 1MB
+// Ottimizza e comprime ricorsivamente tutte le immagini presenti nello stato per salvare quintali di spazio
 const compressStateImages = async (stateToSave: JournalState): Promise<JournalState> => {
   if (!stateToSave || !stateToSave.plants) return stateToSave;
   
-  let docFn: any = null;
-  let setDocFn: any = null;
-  let dbInstance: any = null;
-  
-  try {
-    const { doc, setDoc } = await import("firebase/firestore");
-    const { db } = await import("./firebase");
-    docFn = doc;
-    setDocFn = setDoc;
-    dbInstance = db;
-  } catch (err) {
-    console.warn("Could not load Firebase Firestore for image splitting:", err);
-  }
-
   const compressedPlants = await Promise.all(
     stateToSave.plants.map(async (plant) => {
       let compressedImg = plant.imageUrl;
-      // Se è un'immagine base64 grezza
-      if (plant.imageUrl && plant.imageUrl.startsWith("data:image/")) {
+      // Comprime se è una stringa base64 superiore a 15KB (~11KB binari) per rientrare ampiamente nel limite di 1MB di Firestore
+      if (plant.imageUrl && plant.imageUrl.startsWith("data:image/") && plant.imageUrl.length > 15000) {
         try {
-          // Comprimiamo un po' meno per avere migliore qualità ora che abbiamo spazio infinito!
-          const compressed = await compressImage(plant.imageUrl, 550, 0.45);
-          const imageId = `img-plant-${plant.id}`;
-          
-          if (docFn && setDocFn && dbInstance) {
-            const imageDocRef = docFn(dbInstance, "shares", "samuel-garden", "images", imageId);
-            await setDocFn(imageDocRef, { base64: compressed, updatedAt: new Date().toISOString() });
-            imageCache[imageId] = compressed;
-            compressedImg = `db_image:${imageId}`;
-          } else {
-            compressedImg = compressed;
-          }
-        } catch (err) {
-          console.error("Errore salvataggio immagine pianta su Firestore:", err);
-        }
+          compressedImg = await compressImage(plant.imageUrl, 350, 0.25);
+        } catch (_) {}
       }
 
       let compressedDiary = plant.diary;
@@ -268,22 +162,10 @@ const compressStateImages = async (stateToSave: JournalState): Promise<JournalSt
         compressedDiary = await Promise.all(
           plant.diary.map(async (entry) => {
             let entryImg = entry.imageUrl;
-            if (entry.imageUrl && entry.imageUrl.startsWith("data:image/")) {
+            if (entry.imageUrl && entry.imageUrl.startsWith("data:image/") && entry.imageUrl.length > 15000) {
               try {
-                const compressed = await compressImage(entry.imageUrl, 550, 0.4);
-                const imageId = `img-diary-${entry.id}`;
-                
-                if (docFn && setDocFn && dbInstance) {
-                  const imageDocRef = docFn(dbInstance, "shares", "samuel-garden", "images", imageId);
-                  await setDocFn(imageDocRef, { base64: compressed, updatedAt: new Date().toISOString() });
-                  imageCache[imageId] = compressed;
-                  entryImg = `db_image:${imageId}`;
-                } else {
-                  entryImg = compressed;
-                }
-              } catch (err) {
-                console.error("Errore salvataggio immagine diario su Firestore:", err);
-              }
+                entryImg = await compressImage(entry.imageUrl, 320, 0.2);
+              } catch (_) {}
             }
             return { ...entry, imageUrl: entryImg };
           })
@@ -2819,9 +2701,10 @@ export default function App() {
                         {newPlants.length > 0 ? (
                           newPlants.map(p => (
                             <div key={p.id} className="flex items-center gap-3 p-2 hover:bg-stone-50 rounded-xl transition-all">
-                              <SafeImage
+                              <img
                                 src={p.imageUrl}
                                 alt={p.nickname}
+                                referrerPolicy="no-referrer"
                                 className="w-10 h-10 rounded-full object-cover border border-[#e2e2d8] shrink-0"
                               />
                               <div className="min-w-0 flex-1">
@@ -3389,7 +3272,7 @@ export default function App() {
                     }} />
 
                     <div className="w-12 h-12 rounded-xl overflow-hidden bg-sage-50 flex-shrink-0 border border-[#e2e2d8]">
-                      <SafeImage src={p.imageUrl} alt={p.name} className="w-full h-full object-cover" />
+                      <img src={p.imageUrl} alt={p.name} className="w-full h-full object-cover" />
                     </div>
 
                     <div className="flex-1 min-w-0 flex flex-col justify-between">
@@ -3476,7 +3359,7 @@ export default function App() {
                 <div className="flex flex-col md:flex-row">
                   {/* Image Grid Frame resembling garden bento item */}
                   <div className="md:w-5/12 h-64 md:h-auto overflow-hidden relative min-h-[280px] bg-sage-50 border-r border-[#e2e2d8] cursor-zoom-in" onClick={() => setFullscreenImageUrl(selectedPlant.imageUrl)} title="Clicca per visualizzare a schermo intero">
-                    <SafeImage src={selectedPlant.imageUrl} alt={selectedPlant.name} className="w-full h-full object-cover transition-transform duration-700 hover:scale-105" />
+                    <img src={selectedPlant.imageUrl} alt={selectedPlant.name} className="w-full h-full object-cover transition-transform duration-700 hover:scale-105" />
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 via-transparent to-transparent md:hidden p-4">
                       <span className="text-[9px] uppercase font-mono tracking-widest bg-[#2d3a27] p-1 px-2.5 rounded-full text-white">
                         {selectedPlant.status}
@@ -3891,7 +3774,7 @@ export default function App() {
 
                         {entry.imageUrl && (
                           <div className="mt-3 overflow-hidden rounded-xl border border-[#e2e2d8] max-w-[200px] cursor-zoom-in" onClick={() => setFullscreenImageUrl(entry.imageUrl)} title="Clicca per ingrandire">
-                            <SafeImage src={entry.imageUrl} alt={entry.eventTitle} className="w-full h-auto object-cover max-h-32 transition duration-300 hover:scale-105" />
+                            <img src={entry.imageUrl} alt={entry.eventTitle} className="w-full h-auto object-cover max-h-32 transition duration-300 hover:scale-105" />
                           </div>
                         )}
                       </motion.div>
@@ -4487,7 +4370,7 @@ export default function App() {
 
                   {newPlantForm.imageUrl && (
                     <div className="flex items-center gap-2 mt-2 p-2 bg-sage-50 rounded-xl">
-                      <SafeImage src={newPlantForm.imageUrl} className="w-10 h-10 object-cover rounded-md border" />
+                      <img src={newPlantForm.imageUrl} className="w-10 h-10 object-cover rounded-md border" />
                       <span className="text-[9px] text-sage-500 font-mono truncate max-w-xs">{newPlantForm.imageUrl}</span>
                     </div>
                   )}
@@ -4787,7 +4670,7 @@ export default function App() {
 
                   {newPlantForm.imageUrl && (
                     <div className="flex items-center gap-2 mt-2 p-2 bg-sage-50 rounded-xl">
-                      <SafeImage src={newPlantForm.imageUrl} className="w-10 h-10 object-cover rounded-md border" />
+                      <img src={newPlantForm.imageUrl} className="w-10 h-10 object-cover rounded-md border" />
                       <span className="text-[9px] text-sage-500 font-mono truncate max-w-xs">{newPlantForm.imageUrl}</span>
                     </div>
                   )}
@@ -4941,9 +4824,10 @@ export default function App() {
                             <BookOpen className="w-5 h-5 text-emerald-750" />
                           </div>
                         ) : (
-                          <SafeImage
+                          <img
                             src={plant.imageUrl}
                             alt={plant.name}
+                            referrerPolicy="no-referrer"
                             className="w-12 h-12 object-cover rounded-xl border border-stone-200 shadow-3xs flex-shrink-0"
                           />
                         )}
@@ -5118,7 +5002,7 @@ export default function App() {
                     <div className="mt-2 text-center font-mono">
                       <p className="text-[9px] text-sage-400 uppercase mb-1">Anteprima selezionata:</p>
                       <div className="w-full h-24 rounded-xl overflow-hidden border border-[#e2e2d8] bg-sage-50">
-                        <SafeImage
+                        <img
                           src={newDiaryForm.imageUrl}
                           alt="Anteprima nota"
                           className="w-full h-full object-cover"
@@ -5453,7 +5337,7 @@ export default function App() {
                         <div className="space-y-4">
                           {/* Grayscale image option */}
                           <div className="w-full h-44 rounded-2xl overflow-hidden bg-stone-150 border border-stone-200 relative cursor-zoom-in" onClick={() => setFullscreenImageUrl(p.imageUrl)} title="Clicca per ingrandire">
-                            <SafeImage 
+                            <img 
                               src={p.imageUrl} 
                               alt={p.name} 
                               className="w-full h-full object-cover grayscale contrast-[1.08] blur-[0.3px] group-hover:grayscale-0 hover:scale-[1.06] transition-all duration-300"
@@ -6714,10 +6598,11 @@ export default function App() {
               </button>
 
               {/* L'immagine stessa */}
-              <SafeImage
+              <img
                 src={fullscreenImageUrl}
                 alt="Ingrandimento botanico"
                 className="max-w-full max-h-[85vh] object-contain rounded-2xl select-none shadow-2xl border border-white/10"
+                referrerPolicy="no-referrer"
               />
             </motion.div>
           </div>
