@@ -16,6 +16,11 @@ service cloud.firestore {
     match /shares/{shareId} {
       allow get: if isValidId(shareId);
       allow create, update: if isValidId(shareId) && isValidShare(request.resource.data);
+
+      match /images/{imageId} {
+        allow get, create, update: if isValidId(shareId) && isValidId(imageId);
+        allow delete: if isValidId(shareId) && isValidId(imageId);
+      }
     }
   }
 }
