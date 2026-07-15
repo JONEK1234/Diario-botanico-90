@@ -122,7 +122,7 @@ const compressImage = (base64Str: string, maxWidth = 500, quality = 0.5): Promis
   });
 };
 
-const compressFile = (file: File, maxWidth = 500, quality = 0.5): Promise<string> => {
+const compressFile = (file: File, maxWidth = 350, quality = 0.25): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
@@ -150,10 +150,10 @@ const compressStateImages = async (stateToSave: JournalState): Promise<JournalSt
   const compressedPlants = await Promise.all(
     stateToSave.plants.map(async (plant) => {
       let compressedImg = plant.imageUrl;
-      // Comprime solo se è una stringa base64 lunga superiore a 67KB (~50KB binari)
-      if (plant.imageUrl && plant.imageUrl.startsWith("data:image/") && plant.imageUrl.length > 67000) {
+      // Comprime se è una stringa base64 superiore a 15KB (~11KB binari) per rientrare ampiamente nel limite di 1MB di Firestore
+      if (plant.imageUrl && plant.imageUrl.startsWith("data:image/") && plant.imageUrl.length > 15000) {
         try {
-          compressedImg = await compressImage(plant.imageUrl, 500, 0.4);
+          compressedImg = await compressImage(plant.imageUrl, 350, 0.25);
         } catch (_) {}
       }
 
@@ -162,9 +162,9 @@ const compressStateImages = async (stateToSave: JournalState): Promise<JournalSt
         compressedDiary = await Promise.all(
           plant.diary.map(async (entry) => {
             let entryImg = entry.imageUrl;
-            if (entry.imageUrl && entry.imageUrl.startsWith("data:image/") && entry.imageUrl.length > 67000) {
+            if (entry.imageUrl && entry.imageUrl.startsWith("data:image/") && entry.imageUrl.length > 15000) {
               try {
-                entryImg = await compressImage(entry.imageUrl, 500, 0.4);
+                entryImg = await compressImage(entry.imageUrl, 320, 0.2);
               } catch (_) {}
             }
             return { ...entry, imageUrl: entryImg };
@@ -687,6 +687,8 @@ export default function App() {
   const detailsSectionRef = useRef<HTMLDivElement>(null);
   const latestNoteRef = useRef<HTMLDivElement>(null);
   const oldestNoteRef = useRef<HTMLDivElement>(null);
+  const badgeLongPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isBadgeLongPressActive = useRef(false);
 
   // Form Pianta Nuova / Modifica
   const [newPlantForm, setNewPlantForm] = useState<Partial<Plant>>(() => {
@@ -756,6 +758,10 @@ export default function App() {
 
   // Stato per tenere traccia di quali note di diario hanno l'età visualizzata ad oggi (toggled)
   const [toggledDiaryAges, setToggledDiaryAges] = useState<Record<string, boolean>>({});
+
+  // Stati per la modifica manuale dell'età al momento della nota
+  const [editingAgeEntryId, setEditingAgeEntryId] = useState<string | null>(null);
+  const [editingAgeValue, setEditingAgeValue] = useState<number>(0);
 
   // Stato per l'editing di elementi
   const [editingItem, setEditingItem] = useState<{
@@ -1181,7 +1187,7 @@ export default function App() {
   const processFile = async (file: File) => {
     showToast("Compressione e ottimizzazione dell'immagine... 🖼️⚡");
     try {
-      const compressedBase64 = await compressFile(file, 500, 0.5);
+      const compressedBase64 = await compressFile(file, 350, 0.25);
       setNewPlantForm(prev => ({ ...prev, imageUrl: compressedBase64 }));
       showToast("Immagine catturata e ottimizzata correttamente! 🌿");
     } catch (err) {
@@ -1777,6 +1783,35 @@ export default function App() {
     showToast("Posizione della nota modificata. 📒↕️");
   };
 
+  const handleSaveManualAge = (plantId: string, entryId: string, newAge: number) => {
+    if (isReadOnlyMode) {
+      showToast("La serra è in sola lettura. Modifiche disabilitate. 🌿");
+      return;
+    }
+    setState(prev => ({
+      ...prev,
+      plants: prev.plants.map(p => {
+        if (p.id === plantId) {
+          return {
+            ...p,
+            diary: (p.diary || []).map(d => {
+              if (d.id === entryId) {
+                return {
+                  ...d,
+                  plantAgeAtMoment: newAge
+                };
+              }
+              return d;
+            })
+          };
+        }
+        return p;
+      })
+    }));
+    setEditingAgeEntryId(null);
+    showToast("Età della pianta aggiornata manualmente! 📝🌱");
+  };
+
   const startEditDiary = (entryId: string, plantId: string) => {
     if (isReadOnlyMode) {
       showToast("La serra è in sola lettura. Modifiche disabilitate. 🌿");
@@ -1946,6 +1981,41 @@ export default function App() {
     normalAction();
   };
 
+  const handleBadgeLongPressStart = (entryId: string, currentAge: number) => {
+    if (isReadOnlyMode) return;
+    isBadgeLongPressActive.current = false;
+    if (badgeLongPressTimerRef.current) {
+      clearTimeout(badgeLongPressTimerRef.current);
+    }
+    badgeLongPressTimerRef.current = setTimeout(() => {
+      isBadgeLongPressActive.current = true;
+      if (typeof navigator !== "undefined" && navigator.vibrate) {
+        navigator.vibrate(40);
+      }
+      setEditingAgeEntryId(entryId);
+      setEditingAgeValue(currentAge);
+    }, 600);
+  };
+
+  const handleBadgeLongPressEnd = () => {
+    if (badgeLongPressTimerRef.current) {
+      clearTimeout(badgeLongPressTimerRef.current);
+      badgeLongPressTimerRef.current = null;
+    }
+  };
+
+  const handleBadgeClick = (e: React.MouseEvent | React.TouchEvent, normalAction: () => void) => {
+    if (isBadgeLongPressActive.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      setTimeout(() => {
+        isBadgeLongPressActive.current = false;
+      }, 50);
+      return;
+    }
+    normalAction();
+  };
+
   const handleAddCustomActivity = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newActivityForm.title.trim()) {
@@ -2039,7 +2109,7 @@ export default function App() {
     if (files && files[0]) {
       showToast("Compressione e caricamento foto nota... 🖼️⚡");
       try {
-        const compressedBase64 = await compressFile(files[0], 500, 0.5);
+        const compressedBase64 = await compressFile(files[0], 320, 0.2);
         setNewDiaryForm(prev => ({ ...prev, imageUrl: compressedBase64 }));
         showToast("Immagine della nota salvata e ottimizzata!");
       } catch (err) {
@@ -3598,15 +3668,87 @@ export default function App() {
                           const originalTimelineStart = selectedPlant.originalStartDate || selectedPlant.startDate;
                           const calculatedAgeToday = calculateAge(originalTimelineStart);
                           const isToggled = !!toggledDiaryAges[entry.id];
+                          const isEditingAge = editingAgeEntryId === entry.id;
+
+                          if (isEditingAge) {
+                            return (
+                              <div 
+                                onClick={(e) => e.stopPropagation()}
+                                className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-mono font-bold border shadow-2xs bg-indigo-50 border-indigo-200 text-indigo-900"
+                              >
+                                <span className="text-xs">✏️</span>
+                                <span>Modifica Età:</span>
+                                <input
+                                  type="number"
+                                  value={editingAgeValue}
+                                  onChange={(e) => setEditingAgeValue(Math.max(0, parseInt(e.target.value) || 0))}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      handleSaveManualAge(selectedPlant.id, entry.id, editingAgeValue);
+                                    } else if (e.key === "Escape") {
+                                      setEditingAgeEntryId(null);
+                                    }
+                                  }}
+                                  className="w-16 px-1.5 py-0.5 text-xs font-bold border border-indigo-300 rounded bg-white text-stone-800 font-mono focus:outline-hidden focus:ring-1 focus:ring-indigo-500 text-center"
+                                  autoFocus
+                                />
+                                <span className="text-stone-500">giorni</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSaveManualAge(selectedPlant.id, entry.id, editingAgeValue);
+                                  }}
+                                  className="ml-1 p-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-md cursor-pointer transition-colors"
+                                  title="Salva modifiche"
+                                >
+                                  ✅
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingAgeEntryId(null);
+                                  }}
+                                  className="p-1 bg-rose-500 hover:bg-rose-600 text-white rounded-md cursor-pointer transition-colors"
+                                  title="Annulla"
+                                >
+                                  ❌
+                                </button>
+                              </div>
+                            );
+                          }
 
                           return (
                             <div 
+                              onMouseDown={(e) => {
+                                e.stopPropagation();
+                                handleBadgeLongPressStart(entry.id, ageAtMoment);
+                              }}
+                              onTouchStart={(e) => {
+                                e.stopPropagation();
+                                handleBadgeLongPressStart(entry.id, ageAtMoment);
+                              }}
+                              onMouseUp={(e) => {
+                                e.stopPropagation();
+                                handleBadgeLongPressEnd();
+                              }}
+                              onTouchEnd={(e) => {
+                                e.stopPropagation();
+                                handleBadgeLongPressEnd();
+                              }}
+                              onMouseLeave={(e) => {
+                                e.stopPropagation();
+                                handleBadgeLongPressEnd();
+                              }}
                               onClick={(e) => {
                                   e.stopPropagation();
-                                  setToggledDiaryAges(prev => ({
-                                    ...prev,
-                                    [entry.id]: !prev[entry.id]
-                                  }));
+                                  handleBadgeClick(e, () => {
+                                    setToggledDiaryAges(prev => ({
+                                      ...prev,
+                                      [entry.id]: !prev[entry.id]
+                                    }));
+                                  });
                               }}
                               className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-mono font-bold transition-all cursor-pointer border select-none active:scale-95 shadow-2xs hover:scale-[1.01]"
                               style={{
@@ -3614,7 +3756,7 @@ export default function App() {
                                 borderColor: isToggled ? "#bbf7d0" : "#e2e2d8",
                                 color: isToggled ? "#15803d" : "#57534e",
                               }}
-                              title="Clicca per alternare tra l'età storica e l'età calcolata ad oggi"
+                              title="Clicca per alternare l'età, tieni premuto per modificarla manualmente"
                             >
                               <span className="text-xs">{isToggled ? "🔄" : "🌱"}</span>
                               {isToggled ? (
@@ -3623,7 +3765,7 @@ export default function App() {
                                 </span>
                               ) : (
                                 <span>
-                                  Età della pianta al momento: <strong className="text-stone-800 font-extrabold">{ageAtMoment} giorni</strong> <span className="opacity-75 font-normal text-stone-500">(Clicca per aggiornare ad oggi 🕒)</span>
+                                  Età della pianta al momento: <strong className="text-stone-800 font-extrabold">{ageAtMoment} giorni</strong> <span className="opacity-75 font-normal text-stone-500">(Tieni premuto per modificare 🕒)</span>
                                 </span>
                               )}
                             </div>
