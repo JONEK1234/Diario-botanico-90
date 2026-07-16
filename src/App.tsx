@@ -210,9 +210,9 @@ const uploadImageToStorage = async (base64Str: string, path: string): Promise<st
       console.error("Errore anche durante l'upload locale sul server:", apiErr);
     }
 
-    // Se fallisce l'endpoint locale (ad esempio su Vercel, dove l'Express backend non esiste)
+    // Se fallisce l'endpoint locale (ad esempio su Vercel, dove l'Express backend non esiste o la cartella non è scrivibile)
     try {
-      addSystemLog("info", `[Catbox Cloud] Caricamento su server locale fallito o non supportato (es. Vercel). Tento il caricamento cloud pubblico su Catbox (CORS-friendly)...`);
+      addSystemLog("info", `[Pixeldrain Cloud] Caricamento su server locale fallito o non supportato (es. Vercel). Tento il caricamento cloud pubblico su Pixeldrain (CORS-friendly)...`);
       
       const parts = base64Str.split(";base64,");
       const contentType = parts[0].split(":")[1] || "image/jpeg";
@@ -225,31 +225,31 @@ const uploadImageToStorage = async (base64Str: string, path: string): Promise<st
       const blob = new Blob([uInt8Array], { type: contentType });
       
       const formData = new FormData();
-      formData.append("reqtype", "fileupload");
-      formData.append("fileToUpload", blob, `plant_${Date.now()}.jpg`);
+      formData.append("file", blob, `plant_${Date.now()}.jpg`);
+      formData.append("anonymous", "true");
       
-      const catboxRes = await fetch("https://catbox.moe/user/api.php", {
+      const pxRes = await fetch("https://pixeldrain.com/api/file", {
         method: "POST",
         body: formData,
       });
       
-      if (catboxRes.ok) {
-        const textUrl = await catboxRes.text();
-        if (textUrl && textUrl.startsWith("http")) {
-          const cleanUrl = textUrl.trim();
-          addSystemLog("info", `[Catbox Cloud] Successo! Immagine caricata su Catbox: ${cleanUrl}`);
+      if (pxRes.ok) {
+        const data = await pxRes.json();
+        if (data.success && data.id) {
+          const downloadUrl = `https://pixeldrain.com/api/file/${data.id}`;
+          addSystemLog("info", `[Pixeldrain Cloud] Successo! Immagine caricata su Pixeldrain: ${downloadUrl}`);
           if (typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: cleanUrl } }));
+            window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: downloadUrl } }));
           }
-          return cleanUrl;
+          return downloadUrl;
         } else {
-          addSystemLog("error", `[Catbox Cloud] Risposta non conforme da Catbox: ${textUrl}`);
+          addSystemLog("error", `[Pixeldrain Cloud] Risposta non conforme da Pixeldrain: success = false`);
         }
       } else {
-        addSystemLog("error", `[Catbox Cloud] Errore HTTP da Catbox: ${catboxRes.status}`);
+        addSystemLog("error", `[Pixeldrain Cloud] Errore HTTP da Pixeldrain: ${pxRes.status}`);
       }
-    } catch (catboxErr: any) {
-      addSystemLog("error", `[Catbox Cloud] Errore durante il caricamento su Catbox: ${catboxErr.message}`);
+    } catch (pxErr: any) {
+      addSystemLog("error", `[Pixeldrain Cloud] Errore durante il caricamento su Pixeldrain: ${pxErr.message}`);
     }
 
     addSystemLog("warn", `[Fallback] Impossibile generare un link URL pubblico. L'immagine verrà salvata in memoria locale (Base64)`);
