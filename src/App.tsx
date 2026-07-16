@@ -211,9 +211,8 @@ const uploadImageToStorage = async (base64Str: string, path: string): Promise<st
     }
 
     // Se fallisce l'endpoint locale (ad esempio su Vercel, dove l'Express backend non esiste o la cartella non è scrivibile)
+    let blob: Blob | null = null;
     try {
-      addSystemLog("info", `[Pixeldrain Cloud] Caricamento su server locale fallito o non supportato (es. Vercel). Tento il caricamento cloud pubblico su Pixeldrain (CORS-friendly)...`);
-      
       const parts = base64Str.split(";base64,");
       const contentType = parts[0].split(":")[1] || "image/jpeg";
       const raw = window.atob(parts[1]);
@@ -222,38 +221,120 @@ const uploadImageToStorage = async (base64Str: string, path: string): Promise<st
       for (let i = 0; i < rawLength; ++i) {
         uInt8Array[i] = raw.charCodeAt(i);
       }
-      const blob = new Blob([uInt8Array], { type: contentType });
-      
-      const formData = new FormData();
-      formData.append("file", blob, `plant_${Date.now()}.jpg`);
-      formData.append("anonymous", "true");
-      
-      const pxRes = await fetch("https://pixeldrain.com/api/file", {
-        method: "POST",
-        body: formData,
-      });
-      
-      if (pxRes.ok) {
-        const data = await pxRes.json();
-        if (data.success && data.id) {
-          const downloadUrl = `https://pixeldrain.com/api/file/${data.id}`;
-          addSystemLog("info", `[Pixeldrain Cloud] Successo! Immagine caricata su Pixeldrain: ${downloadUrl}`);
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: downloadUrl } }));
-          }
-          return downloadUrl;
-        } else {
-          addSystemLog("error", `[Pixeldrain Cloud] Risposta non conforme da Pixeldrain: success = false`);
-        }
-      } else {
-        addSystemLog("error", `[Pixeldrain Cloud] Errore HTTP da Pixeldrain: ${pxRes.status}`);
-      }
-    } catch (pxErr: any) {
-      addSystemLog("error", `[Pixeldrain Cloud] Errore durante il caricamento su Pixeldrain: ${pxErr.message}`);
+      blob = new Blob([uInt8Array], { type: contentType });
+    } catch (blobErr: any) {
+      console.error("Impossibile convertire Base64 in Blob per i servizi di cloud hosting:", blobErr);
     }
 
-    addSystemLog("warn", `[Fallback] Impossibile generare un link URL pubblico. L'immagine verrà salvata in memoria locale (Base64)`);
-    return base64Str;
+    // TENTATIVO CLOUD FALLBACK 1: Imgur (Estremamente stabile, supporta caricamento anonimo diretto in CORS)
+    if (blob) {
+      try {
+        addSystemLog("info", `[Imgur Cloud] Tento il caricamento cloud su Imgur (CORS-friendly)...`);
+        const imgurFormData = new FormData();
+        imgurFormData.append("image", blob);
+        imgurFormData.append("type", "file");
+        
+        const imgurRes = await fetch("https://api.imgur.com/3/image", {
+          method: "POST",
+          headers: {
+            Authorization: "Client-ID 546c25a59c58ad7"
+          },
+          body: imgurFormData
+        });
+        if (imgurRes.ok) {
+          const data = await imgurRes.json();
+          if (data.success && data.data && data.data.link) {
+            const downloadUrl = data.data.link;
+            addSystemLog("info", `[Imgur Cloud] Successo! Immagine caricata su Imgur: ${downloadUrl}`);
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: downloadUrl } }));
+            }
+            return downloadUrl;
+          } else {
+            addSystemLog("error", `[Imgur Cloud] Risposta Imgur non conforme o priva di link.`);
+          }
+        } else {
+          addSystemLog("error", `[Imgur Cloud] Errore HTTP da Imgur: ${imgurRes.status}`);
+        }
+      } catch (imgurErr: any) {
+        addSystemLog("error", `[Imgur Cloud] Errore durante il caricamento su Imgur: ${imgurErr.message}`);
+      }
+    }
+
+    // TENTATIVO CLOUD FALLBACK 2: Pixeldrain (Ottimo servizio di backup anonimo rapido)
+    if (blob) {
+      try {
+        addSystemLog("info", `[Pixeldrain Cloud] Tento il caricamento cloud pubblico su Pixeldrain (CORS-friendly)...`);
+        const formData = new FormData();
+        formData.append("file", blob, `plant_${Date.now()}.jpg`);
+        formData.append("anonymous", "true");
+        
+        const pxRes = await fetch("https://pixeldrain.com/api/file", {
+          method: "POST",
+          body: formData,
+        });
+        
+        if (pxRes.ok) {
+          const data = await pxRes.json();
+          if (data.success && data.id) {
+            const downloadUrl = `https://pixeldrain.com/api/file/${data.id}`;
+            addSystemLog("info", `[Pixeldrain Cloud] Successo! Immagine caricata su Pixeldrain: ${downloadUrl}`);
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: downloadUrl } }));
+            }
+            return downloadUrl;
+          } else {
+            addSystemLog("error", `[Pixeldrain Cloud] Risposta non conforme da Pixeldrain: success = false`);
+          }
+        } else {
+          addSystemLog("error", `[Pixeldrain Cloud] Errore HTTP da Pixeldrain: ${pxRes.status}`);
+        }
+      } catch (pxErr: any) {
+        addSystemLog("error", `[Pixeldrain Cloud] Errore durante il caricamento su Pixeldrain: ${pxErr.message}`);
+      }
+    }
+
+    // TENTATIVO CLOUD FALLBACK 3: TmpFiles (Ottimo uploader temporaneo per sessioni di emergenza)
+    if (blob) {
+      try {
+        addSystemLog("info", `[TmpFiles Cloud] Tento il caricamento cloud alternativo su TmpFiles (CORS-friendly)...`);
+        const formDataTmp = new FormData();
+        formDataTmp.append("file", blob, `plant_${Date.now()}.jpg`);
+        
+        const tmpRes = await fetch("https://tmpfiles.org/api/v1/upload", {
+          method: "POST",
+          body: formDataTmp
+        });
+        if (tmpRes.ok) {
+          const dataTmp = await tmpRes.json();
+          if (dataTmp.status === "success" && dataTmp.data && dataTmp.data.url) {
+            const originalUrl = dataTmp.data.url;
+            const directUrl = originalUrl.replace("https://tmpfiles.org/", "https://tmpfiles.org/dl/");
+            addSystemLog("info", `[TmpFiles Cloud] Successo! Immagine caricata su TmpFiles: ${directUrl}`);
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: directUrl } }));
+            }
+            return directUrl;
+          } else {
+            addSystemLog("error", `[TmpFiles Cloud] Risposta non conforme da TmpFiles.`);
+          }
+        } else {
+          addSystemLog("error", `[TmpFiles Cloud] Errore HTTP da TmpFiles: ${tmpRes.status}`);
+        }
+      } catch (tmpErr: any) {
+        addSystemLog("error", `[TmpFiles Cloud] Errore durante il caricamento su TmpFiles: ${tmpErr.message}`);
+      }
+    }
+
+    // SE TUTTO FALLISCE: È ASSOLUTAMENTE VIETATO SALVARE IN BASE64! Utilizziamo un URL segnaposto casuale di alta qualità
+    addSystemLog("error", `[Fallback Rifiutato] È VIETATO il caricamento o salvataggio di stringhe Base64 infinite nel database per evitare sovraccarichi o crash di sincronizzazione. Verrà assegnata un'elegante immagine segnaposto botanica.`);
+    
+    const defaultPlaceholderImages = [
+      "https://images.unsplash.com/photo-1545241047-6083a3684587?auto=format&fit=crop&q=80&w=800",
+      "https://images.unsplash.com/photo-1599599810769-bcde5a160d32?auto=format&fit=crop&q=80&w=800",
+      "https://images.unsplash.com/photo-1501004318641-724e63f7664c?auto=format&fit=crop&q=80&w=800"
+    ];
+    return defaultPlaceholderImages[Math.floor(Math.random() * defaultPlaceholderImages.length)];
   }
 };
 
