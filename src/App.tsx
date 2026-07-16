@@ -209,6 +209,49 @@ const uploadImageToStorage = async (base64Str: string, path: string): Promise<st
       addSystemLog("error", `[Server Local] Errore di rete con il server di backup: ${apiErr.message}`);
       console.error("Errore anche durante l'upload locale sul server:", apiErr);
     }
+
+    // Se fallisce l'endpoint locale (ad esempio su Vercel, dove l'Express backend non esiste)
+    try {
+      addSystemLog("info", `[Catbox Cloud] Caricamento su server locale fallito o non supportato (es. Vercel). Tento il caricamento cloud pubblico su Catbox (CORS-friendly)...`);
+      
+      const parts = base64Str.split(";base64,");
+      const contentType = parts[0].split(":")[1] || "image/jpeg";
+      const raw = window.atob(parts[1]);
+      const rawLength = raw.length;
+      const uInt8Array = new Uint8Array(rawLength);
+      for (let i = 0; i < rawLength; ++i) {
+        uInt8Array[i] = raw.charCodeAt(i);
+      }
+      const blob = new Blob([uInt8Array], { type: contentType });
+      
+      const formData = new FormData();
+      formData.append("reqtype", "fileupload");
+      formData.append("fileToUpload", blob, `plant_${Date.now()}.jpg`);
+      
+      const catboxRes = await fetch("https://catbox.moe/user/api.php", {
+        method: "POST",
+        body: formData,
+      });
+      
+      if (catboxRes.ok) {
+        const textUrl = await catboxRes.text();
+        if (textUrl && textUrl.startsWith("http")) {
+          const cleanUrl = textUrl.trim();
+          addSystemLog("info", `[Catbox Cloud] Successo! Immagine caricata su Catbox: ${cleanUrl}`);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: cleanUrl } }));
+          }
+          return cleanUrl;
+        } else {
+          addSystemLog("error", `[Catbox Cloud] Risposta non conforme da Catbox: ${textUrl}`);
+        }
+      } else {
+        addSystemLog("error", `[Catbox Cloud] Errore HTTP da Catbox: ${catboxRes.status}`);
+      }
+    } catch (catboxErr: any) {
+      addSystemLog("error", `[Catbox Cloud] Errore durante il caricamento su Catbox: ${catboxErr.message}`);
+    }
+
     addSystemLog("warn", `[Fallback] Impossibile generare un link URL pubblico. L'immagine verrà salvata in memoria locale (Base64)`);
     return base64Str;
   }
