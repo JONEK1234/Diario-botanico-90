@@ -1565,20 +1565,20 @@ export default function App() {
 
         const docRef = doc(db, "shares", "samuel-garden");
 
-        // Prima compattiamo ricorsivamente le immagini
-        const compressedState = await compressStateImages(state);
-        
-        // Se si è verificata una compressione di immagini nuove pesanti, allineiamo lo stato React locale
-        if (JSON.stringify(compressedState.plants) !== JSON.stringify(state.plants)) {
-          setState(compressedState);
+        // Ottimizziamo: eseguiamo la compressione ricorsiva delle immagini dello stato SOLO se ci sono effettivamente immagini base64.
+        // Questo evita un collo di bottiglia asincrono continuo (Promise.all) ad ogni singola modifica/pressione di tasti.
+        // NON eseguiamo setState qui dentro per prevenire race conditions e perdite di modifiche intermedie dell'utente.
+        let stateToSave = state;
+        if (hasBase64Images(state)) {
+          stateToSave = await compressStateImages(state);
         }
 
         const payload = {
           id: "samuel-garden",
-          plants: compressedState.plants,
-          activities: compressedState.activities,
-          smartTrackers: compressedState.smartTrackers || [],
-          settings: compressedState.settings,
+          plants: stateToSave.plants,
+          activities: stateToSave.activities,
+          smartTrackers: stateToSave.smartTrackers || [],
+          settings: stateToSave.settings,
           updatedAt: state.updatedAt || new Date().toISOString()
         };
 
@@ -1722,10 +1722,8 @@ export default function App() {
   // --- OPERAZIONI DI STATO PER PIANTE ---
   const handleCreatePlant = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPlantForm.name || !newPlantForm.nickname) {
-      showToast("Compila almeno il nome e il soprannome.");
-      return;
-    }
+    const finalName = (newPlantForm.name || "").trim();
+    const finalNickname = (newPlantForm.nickname || "").trim();
 
     const defaultImages = [
       "https://images.unsplash.com/photo-1545241047-6083a3684587?auto=format&fit=crop&q=80&w=800",
@@ -1735,12 +1733,12 @@ export default function App() {
 
     const finalPlant: Plant = {
       id: "plant-" + Date.now(),
-      name: newPlantForm.name,
-      nickname: newPlantForm.nickname,
-      species: newPlantForm.species || "Specie Sconosciuta",
+      name: finalName,
+      nickname: finalNickname,
+      species: newPlantForm.species || "",
       origin: newPlantForm.origin || PlantOrigin.ACQUISTO,
       startDate: newPlantForm.startDate || new Date().toISOString().split("T")[0],
-      description: newPlantForm.description || "Nessun racconto di crescita iniziale inserito.",
+      description: newPlantForm.description || "",
       imageUrl: newPlantForm.imageUrl || defaultImages[Math.floor(Math.random() * defaultImages.length)],
       status: newPlantForm.status || PlantStatus.CRESCITA,
       health: newPlantForm.health || 100,
@@ -1809,17 +1807,17 @@ export default function App() {
         if (p.id === selectedPlant.id) {
           return {
             ...p,
-            name: newPlantForm.name || p.name,
-            nickname: newPlantForm.nickname || p.nickname,
-            species: newPlantForm.species || p.species,
+            name: newPlantForm.name !== undefined ? newPlantForm.name : p.name,
+            nickname: newPlantForm.nickname !== undefined ? newPlantForm.nickname : p.nickname,
+            species: newPlantForm.species !== undefined ? newPlantForm.species : p.species,
             origin: newPlantForm.origin || p.origin,
             startDate: newPlantForm.startDate || p.startDate,
             originalStartDate: p.originalStartDate || p.startDate,
-            description: newPlantForm.description || p.description,
-            imageUrl: newPlantForm.imageUrl || p.imageUrl,
-            status: newPlantForm.status || p.status,
+            description: newPlantForm.description !== undefined ? newPlantForm.description : p.description,
+            imageUrl: newPlantForm.imageUrl !== undefined ? newPlantForm.imageUrl : p.imageUrl,
+            status: newPlantForm.status !== undefined ? newPlantForm.status : p.status,
             health: newPlantForm.health ?? p.health,
-            notes: newPlantForm.notes || p.notes,
+            notes: newPlantForm.notes !== undefined ? newPlantForm.notes : p.notes,
             tags: newPlantForm.tags || p.tags,
             lastDataModifiedAt: lastDataModifiedAt,
             diary: additionalDiaryEntries.length > 0 
@@ -1850,9 +1848,9 @@ export default function App() {
     const snapEntry: DiaryEntry = {
       id: "diary-snap-" + Date.now(),
       date: new Date().toISOString(),
-      eventTitle: `Memoria Storica: ${newPlantForm.nickname || selectedPlant.nickname}`,
+      eventTitle: `Memoria Storica: ${newPlantForm.nickname !== undefined ? newPlantForm.nickname : selectedPlant.nickname}`,
       notes: summaryNotes,
-      imageUrl: newPlantForm.imageUrl || selectedPlant.imageUrl,
+      imageUrl: newPlantForm.imageUrl !== undefined ? newPlantForm.imageUrl : selectedPlant.imageUrl,
       category: "evoluzione",
       plantAgeAtMoment: ageDays
     };
@@ -1876,17 +1874,17 @@ export default function App() {
         if (p.id === selectedPlant.id) {
           return {
             ...p,
-            name: newPlantForm.name || p.name,
-            nickname: newPlantForm.nickname || p.nickname,
-            species: newPlantForm.species || p.species,
+            name: newPlantForm.name !== undefined ? newPlantForm.name : p.name,
+            nickname: newPlantForm.nickname !== undefined ? newPlantForm.nickname : p.nickname,
+            species: newPlantForm.species !== undefined ? newPlantForm.species : p.species,
             origin: newPlantForm.origin || p.origin,
             startDate: newPlantForm.startDate || p.startDate,
             originalStartDate: p.originalStartDate || p.startDate,
-            description: newPlantForm.description || p.description,
-            imageUrl: newPlantForm.imageUrl || p.imageUrl,
-            status: newPlantForm.status || p.status,
+            description: newPlantForm.description !== undefined ? newPlantForm.description : p.description,
+            imageUrl: newPlantForm.imageUrl !== undefined ? newPlantForm.imageUrl : p.imageUrl,
+            status: newPlantForm.status !== undefined ? newPlantForm.status : p.status,
             health: newPlantForm.health ?? p.health,
-            notes: newPlantForm.notes || p.notes,
+            notes: newPlantForm.notes !== undefined ? newPlantForm.notes : p.notes,
             tags: newPlantForm.tags || p.tags,
             lastDataModifiedAt: lastDataModifiedAt,
             diary: [snapEntry, ...additionalDiaryEntries, ...(p.diary || [])]
@@ -2094,13 +2092,10 @@ export default function App() {
       showToast("La serra è in sola lettura. Impossibile attivare tracciatori. 🌿");
       return;
     }
-    if (!newTrackerForm.title.trim()) {
-      showToast("Inserisci un titolo per il tracciamento!");
-      return;
-    }
+    const finalTitle = newTrackerForm.title.trim();
     const newTracker: SmartTracker = {
       id: "tracker-" + Date.now(),
-      title: newTrackerForm.title,
+      title: finalTitle,
       startDate: newTrackerForm.startDate,
       durationDays: Number(newTrackerForm.durationDays) || 1,
       isCompleted: false,
@@ -2340,10 +2335,8 @@ export default function App() {
     if (!editingItem) return;
 
     if (editingItem.type === "diary") {
-      if (!editingItem.title.trim() || !editingItem.notes?.trim()) {
-        showToast("Inserisci titolo e testo della nota.");
-        return;
-      }
+      const finalTitle = editingItem.title.trim();
+      const finalNotes = (editingItem.notes || "").trim();
       setState(prev => ({
         ...prev,
         plants: prev.plants.map(p => {
@@ -2352,8 +2345,8 @@ export default function App() {
               if (d.id === editingItem.id) {
                 return {
                   ...d,
-                  eventTitle: editingItem.title,
-                  notes: editingItem.notes || "",
+                  eventTitle: finalTitle,
+                  notes: finalNotes,
                   category: (editingItem.category || d.category) as DiaryEntry["category"],
                   imageUrl: editingItem.imageUrl,
                   date: editingItem.date || d.date
@@ -2373,17 +2366,14 @@ export default function App() {
       }));
       showToast("Nota del diario botanico salvata con successo! 📒");
     } else {
-      if (!editingItem.title.trim()) {
-        showToast("Inserisci un titolo per l'attività.");
-        return;
-      }
+      const finalTitle = editingItem.title.trim();
       setState(prev => ({
         ...prev,
         activities: prev.activities.map(act => {
           if (act.id === editingItem.id) {
             return {
               ...act,
-              title: editingItem.title,
+              title: finalTitle,
               priority: (editingItem.priority || act.priority) as CareActivity["priority"],
               dueDate: editingItem.dueDate || act.dueDate,
               type: editingItem.activityType || act.type
@@ -2498,20 +2488,18 @@ export default function App() {
 
   const handleAddCustomActivity = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newActivityForm.title.trim()) {
-      showToast("Inserisci un titolo per l'attività.");
-      return;
-    }
     if (!selectedPlantId) {
       showToast("Nessuna pianta selezionata.");
       return;
     }
 
+    const finalTitle = newActivityForm.title.trim();
+
     const newAct: CareActivity = {
       id: "act-" + Date.now(),
       plantId: selectedPlantId,
       type: newActivityForm.type,
-      title: newActivityForm.title,
+      title: finalTitle,
       status: "todo",
       dueDate: newActivityForm.dueDate || new Date().toISOString().split("T")[0],
       priority: newActivityForm.priority,
@@ -2536,10 +2524,9 @@ export default function App() {
   // --- REGISTRAZIONE DIARIO DI CRESCITA ---
   const handleAddDiaryEntry = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newDiaryForm.eventTitle || !newDiaryForm.notes) {
-      showToast("Inserisci un titolo e il testo della nota.");
-      return;
-    }
+    
+    const finalTitle = newDiaryForm.eventTitle.trim();
+    const finalNotes = newDiaryForm.notes.trim();
 
     const entryDate = newDiaryForm.date || new Date().toISOString();
     const timelineStart = selectedPlant
@@ -2550,8 +2537,8 @@ export default function App() {
     const newEntry: DiaryEntry = {
       id: "diary-" + Date.now(),
       date: entryDate,
-      eventTitle: newDiaryForm.eventTitle,
-      notes: newDiaryForm.notes,
+      eventTitle: finalTitle,
+      notes: finalNotes,
       imageUrl: newDiaryForm.imageUrl || undefined,
       category: newDiaryForm.category,
       plantAgeAtMoment: ageAtMoment
@@ -3935,6 +3922,7 @@ export default function App() {
                 }}
                 isReadOnlyMode={isReadOnlyMode}
                 showToast={showToast}
+                uploadImage={uploadImageToStorage}
               />
             ) : (
               <>

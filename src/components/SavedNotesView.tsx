@@ -96,6 +96,7 @@ interface SavedNotesViewProps {
   onUpdateNotes: (plantId: string, notes: SavedNote[]) => void;
   isReadOnlyMode: boolean;
   showToast: (msg: string) => void;
+  uploadImage?: (base64Str: string, path: string) => Promise<string>;
 }
 
 export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
@@ -105,6 +106,7 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
   onUpdateNotes,
   isReadOnlyMode,
   showToast,
+  uploadImage,
 }) => {
   const notes = plant.savedNotes || [];
 
@@ -162,11 +164,22 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
   const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files[0]) {
-      showToast("Compressione copertina... 🖼️⚡");
+      showToast("Ottimizzazione e compressione copertina... 🖼️⚡");
       try {
-        const compressed = await compressFile(files[0], 500, 0.5);
-        setCoverImage(compressed);
-        showToast("Copertina aggiunta correttamente!");
+        const compressed = await compressFile(files[0], 350, 0.25);
+        if (uploadImage) {
+          showToast("Caricamento sicuro della copertina... ☁️");
+          const cloudUrl = await uploadImage(compressed, `savedNotes/cover_${Date.now()}.jpg`);
+          setCoverImage(cloudUrl);
+          if (cloudUrl.startsWith("data:")) {
+            showToast("Copertina salvata offline nel browser! 💾🌿");
+          } else {
+            showToast("Copertina caricata online con successo! 🌿✨");
+          }
+        } else {
+          setCoverImage(compressed);
+          showToast("Copertina aggiunta correttamente!");
+        }
       } catch (_) {
         showToast("Errore durante il caricamento.");
       }
@@ -176,11 +189,22 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
   const handleExtraUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files[0]) {
-      showToast("Compressione immagine aggiuntiva... 🖼️⚡");
+      showToast("Ottimizzazione e compressione foto... 🖼️⚡");
       try {
-        const compressed = await compressFile(files[0], 500, 0.5);
-        setAdditionalImages(prev => [...prev, compressed]);
-        showToast("Immagine galleria aggiunta!");
+        const compressed = await compressFile(files[0], 320, 0.2);
+        if (uploadImage) {
+          showToast("Caricamento sicuro della foto... ☁️");
+          const cloudUrl = await uploadImage(compressed, `savedNotes/extra_${Date.now()}.jpg`);
+          setAdditionalImages(prev => [...prev, cloudUrl]);
+          if (cloudUrl.startsWith("data:")) {
+            showToast("Foto salvata offline nel browser! 💾🌿");
+          } else {
+            showToast("Foto caricata online con successo! 🌿✨");
+          }
+        } else {
+          setAdditionalImages(prev => [...prev, compressed]);
+          showToast("Immagine galleria aggiunta!");
+        }
       } catch (_) {
         showToast("Errore durante il caricamento.");
       }
