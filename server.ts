@@ -104,6 +104,53 @@ async function startServer() {
     fs.mkdirSync(SHARES_DIR, { recursive: true });
   }
 
+  // --- GESTIONE UPLOADS LOCALI PER FOTO LEGGERE (SOLUZIONE 100% AFFIDABILE) ---
+  const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+  if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  }
+  app.use("/uploads", express.static(UPLOADS_DIR));
+
+  // API: Upload locale sul server in caso di problemi con Cloud Storage
+  app.post("/api/upload", (req, res) => {
+    try {
+      const { image } = req.body;
+      if (!image) {
+        return res.status(400).json({ error: "Nessuna immagine inviata" });
+      }
+
+      let base64Data = "";
+      let ext = "jpg";
+
+      if (image.includes(";base64,")) {
+        const parts = image.split(";base64,");
+        const mimePart = parts[0]; // e.g. "data:image/png"
+        base64Data = parts[1];
+
+        const mimeMatches = mimePart.match(/image\/([A-Za-z-+\/]+)/);
+        if (mimeMatches) {
+          ext = mimeMatches[1] === "jpeg" ? "jpg" : mimeMatches[1];
+        }
+      } else {
+        base64Data = image;
+      }
+
+      // Clean up whitespace or newlines if any
+      base64Data = base64Data.trim().replace(/\s/g, "");
+
+      const buffer = Buffer.from(base64Data, "base64");
+      const fileName = `img_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+      const filePath = path.join(UPLOADS_DIR, fileName);
+
+      fs.writeFileSync(filePath, buffer);
+      console.log(`[API] Immagine salvata localmente con successo: /uploads/${fileName}`);
+      res.json({ url: `/uploads/${fileName}` });
+    } catch (err: any) {
+      console.error("Errore durante il salvataggio dell'immagine locale:", err);
+      res.status(500).json({ error: "Impossibile salvare sul server locale: " + err.message });
+    }
+  });
+
   // API: Salva o aggiorna una condivisione sul server / cloud
   app.post("/api/shares", async (req, res) => {
     try {

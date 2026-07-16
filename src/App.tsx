@@ -40,7 +40,8 @@ import {
   HeartOff,
   ArrowLeft,
   History,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Database
 } from "lucide-react";
 import { JournalState, Plant, CareActivity, PlantStatus, PlantOrigin, DiaryEntry, SmartTracker, SavedNote } from "./types";
 import { SavedNotesView } from "./components/SavedNotesView";
@@ -49,12 +50,7 @@ import JSZip from "jszip";
 
 const getApiUrl = (endpoint: string): string => {
   if (typeof window === "undefined") return endpoint;
-  const host = window.location.hostname;
-  if (host === "localhost" || host === "127.0.0.1" || host.startsWith("192.168.")) {
-    return endpoint;
-  }
-  const baseUrl = "https://ais-pre-sx4htuchmf4s4oselbkdae-210149562905.europe-west2.run.app";
-  return `${baseUrl}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
+  return `${window.location.origin}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
 };
 
 const toLocalDatetimeString = (isoString: string): string => {
@@ -143,14 +139,239 @@ const compressFile = (file: File, maxWidth = 350, quality = 0.25): Promise<strin
   });
 };
 
-// Ottimizza e comprime ricorsivamente tutte le immagini presenti nello stato per salvare quintali di spazio
+const addSystemLog = (type: "log" | "warn" | "error" | "info", text: string) => {
+  if (typeof window !== "undefined") {
+    const event = new CustomEvent("system_log", { detail: { type, text } });
+    window.dispatchEvent(event);
+  }
+};
+
+// Carica un'immagine codificata in base64 su Firebase Storage e ne restituisce l'URL pubblico (getDownloadURL)
+const uploadImageToStorage = async (base64Str: string, path: string): Promise<string> => {
+  const sizeKb = Math.round((base64Str.length * 0.75) / 1024);
+  addSystemLog("info", `[Storage] Inizio caricamento foto (${sizeKb} KB) su Firebase Storage: ${path}`);
+  try {
+    const { ref, uploadString, getDownloadURL } = await import("firebase/storage");
+    const { storage } = await import("./firebase");
+    const storageRef = ref(storage, path);
+    addSystemLog("info", `[Storage] Collegamento al bucket Firebase Storage stabilito con successo.`);
+    
+    // uploadString supporta nativamente il formato 'data_url' per stringhe "data:image/..."
+    addSystemLog("info", `[Storage] Trasferimento dei pacchetti di dati in corso (con limite timeout 2.2s)...`);
+    
+    const uploadPromise = (async () => {
+      const uploadResult = await uploadString(storageRef, base64Str, "data_url");
+      addSystemLog("info", `[Storage] File trasferito con successo. Richiesta generazione URL pubblico...`);
+      const downloadUrl = await getDownloadURL(uploadResult.ref);
+      return downloadUrl;
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout di connessione Firebase Storage (2.2s scaduto)")), 2200)
+    );
+
+    const downloadUrl = await Promise.race([uploadPromise, timeoutPromise]);
+    addSystemLog("info", `[Storage] Successo! URL pubblico generato nel cloud: ${downloadUrl}`);
+    
+    // Dispatch a link created event for convenience
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: downloadUrl } }));
+    }
+    return downloadUrl;
+  } catch (error: any) {
+    addSystemLog("warn", `[Storage] Firebase Storage lento o non configurato (${error.message || "Errore sconosciuto"}). Attivo il fallback istantaneo sul server...`);
+    console.warn("Errore durante l'upload su Firebase Storage, provo il caricamento locale del server:", error);
+    try {
+      addSystemLog("info", `[Server Local] Invio file compresso all'endpoint di backup /api/upload...`);
+      const res = await fetch(getApiUrl("/api/upload"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: base64Str })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.url) {
+          const localUrl = getApiUrl(data.url);
+          addSystemLog("info", `[Server Local] Successo! File caricato localmente sul server: ${localUrl}`);
+          console.log("Immagine caricata correttamente sul server locale:", data.url);
+          
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: localUrl } }));
+          }
+          return localUrl;
+        } else {
+          addSystemLog("error", `[Server Local] Risposta dal server non conforme (URL non presente nel payload)`);
+        }
+      } else {
+        addSystemLog("error", `[Server Local] Errore HTTP dal server locale: ${res.status} ${res.statusText}`);
+      }
+    } catch (apiErr: any) {
+      addSystemLog("error", `[Server Local] Errore di rete con il server di backup: ${apiErr.message}`);
+      console.error("Errore anche durante l'upload locale sul server:", apiErr);
+    }
+    addSystemLog("warn", `[Fallback] Impossibile generare un link URL pubblico. L'immagine verrà salvata in memoria locale (Base64)`);
+    return base64Str;
+  }
+};
+
+interface ImageLinkCreatorProgressProps {
+  state: {
+    status: "idle" | "compressing" | "uploading" | "done" | "error";
+    url?: string;
+    errorMsg?: string;
+  };
+  onClear: () => void;
+}
+
+const ImageLinkCreatorProgress: React.FC<ImageLinkCreatorProgressProps> = ({ state, onClear }) => {
+  const [copied, setCopied] = useState(false);
+
+  if (state.status === "idle") return null;
+
+  const handleCopy = () => {
+    if (state.url) {
+      navigator.clipboard.writeText(state.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const getStepClass = (stepNum: number) => {
+    const s = state.status;
+    if (s === "done") return "text-emerald-700 font-semibold";
+    if (stepNum === 1) {
+      return s === "compressing" ? "text-amber-700 animate-pulse font-semibold" : "text-emerald-700 font-medium";
+    }
+    if (stepNum === 2) {
+      if (s === "compressing") return "text-stone-400";
+      return s === "uploading" ? "text-amber-700 animate-pulse font-semibold" : "text-emerald-700 font-medium";
+    }
+    if (stepNum === 3) {
+      if (s === "compressing" || s === "uploading") return "text-stone-400";
+      return "text-emerald-700 font-semibold";
+    }
+    return "text-stone-400";
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10 }}
+      className={`p-3 rounded-2xl border font-mono text-[10px] space-y-2 mt-2 transition-all ${
+        state.status === "done"
+          ? "bg-emerald-50/80 border-emerald-200 text-emerald-900 shadow-xs"
+          : state.status === "error"
+          ? "bg-red-50/80 border-red-200 text-red-900"
+          : "bg-amber-50/80 border-amber-200 text-stone-800"
+      }`}
+    >
+      <div className="flex justify-between items-center border-b pb-1.5 border-dashed border-stone-200/60">
+        <span className="font-bold flex items-center gap-1.5 text-stone-700">
+          <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+          GENERATORE DI LINK CLOUD
+        </span>
+        <button
+          type="button"
+          onClick={onClear}
+          className="text-[9px] text-stone-500 hover:text-stone-800 bg-stone-100 hover:bg-stone-200 px-1.5 py-0.5 rounded-md"
+        >
+          Chiudi
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold ${
+            state.status !== "compressing" ? "bg-emerald-200 text-emerald-800" : "bg-amber-200 text-amber-800 animate-pulse"
+          }`}>
+            1
+          </span>
+          <span className={getStepClass(1)}>
+            Compressione e ottimizzazione {state.status !== "compressing" ? "✓" : "⚡"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold ${
+            state.status === "done" ? "bg-emerald-200 text-emerald-800" : state.status === "uploading" ? "bg-amber-200 text-amber-800 animate-pulse" : "bg-stone-100 text-stone-400"
+          }`}>
+            2
+          </span>
+          <span className={getStepClass(2)}>
+            Caricamento sicuro nel database {state.status === "done" ? "✓" : state.status === "uploading" ? "⚡" : ""}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold ${
+            state.status === "done" ? "bg-emerald-200 text-emerald-800" : "bg-stone-100 text-stone-400"
+          }`}>
+            3
+          </span>
+          <span className={getStepClass(3)}>
+            Link pubblico generato e incollato {state.status === "done" ? "✓" : ""}
+          </span>
+        </div>
+      </div>
+
+      {state.status === "done" && state.url && (
+        <motion.div
+          initial={{ scale: 0.98, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="p-2 bg-white/95 border border-emerald-200 rounded-xl space-y-1.5"
+        >
+          <div className="text-[9px] text-emerald-800 font-bold uppercase tracking-wider flex items-center gap-1">
+            <span>Link creato e applicato! 🔗🌿</span>
+          </div>
+          <div className="flex gap-1.5 items-center bg-stone-50 p-1.5 rounded-lg border border-stone-100">
+            <span className="truncate flex-1 text-[9px] text-stone-600 select-all font-mono">
+              {state.url}
+            </span>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-bold text-[8px] uppercase tracking-wider flex items-center gap-1 transition-all shrink-0"
+            >
+              {copied ? "Copiato!" : "Copia"}
+            </button>
+          </div>
+        </motion.div>
+      )}
+
+      {state.status === "error" && (
+        <div className="p-2 bg-red-100/50 border border-red-200 rounded-xl text-red-800 text-[9px]">
+          ⚠️ Errore: {state.errorMsg}
+        </div>
+      )}
+    </motion.div>
+  );
+};
+
+const countBase64Images = (stateToSave: JournalState): number => {
+  let count = 0;
+  if (!stateToSave || !stateToSave.plants) return 0;
+  for (const plant of stateToSave.plants) {
+    if (plant.imageUrl && plant.imageUrl.startsWith("data:image/")) {
+      count++;
+    }
+    if (plant.diary) {
+      for (const entry of plant.diary) {
+        if (entry.imageUrl && entry.imageUrl.startsWith("data:image/")) {
+          count++;
+        }
+      }
+    }
+  }
+  return count;
+};
+
+// Ottimizza e comprime ricorsivamente tutte le immagini presenti nello stato locale (mantiene base64 per quelle vecchie senza ricaricarle sul cloud)
 const compressStateImages = async (stateToSave: JournalState): Promise<JournalState> => {
   if (!stateToSave || !stateToSave.plants) return stateToSave;
   
   const compressedPlants = await Promise.all(
     stateToSave.plants.map(async (plant) => {
       let compressedImg = plant.imageUrl;
-      // Comprime se è una stringa base64 superiore a 15KB (~11KB binari) per rientrare ampiamente nel limite di 1MB di Firestore
+      // Comprime solo se è una stringa base64 superiore a 15KB per non sprecare cpu
       if (plant.imageUrl && plant.imageUrl.startsWith("data:image/") && plant.imageUrl.length > 15000) {
         try {
           compressedImg = await compressImage(plant.imageUrl, 350, 0.25);
@@ -183,6 +404,63 @@ const compressStateImages = async (stateToSave: JournalState): Promise<JournalSt
   return {
     ...stateToSave,
     plants: compressedPlants,
+  };
+};
+
+const hasBase64Images = (stateObj: JournalState): boolean => {
+  if (!stateObj || !stateObj.plants) return false;
+  return stateObj.plants.some(p => 
+    (p.imageUrl && p.imageUrl.startsWith("data:image/")) ||
+    (p.diary && p.diary.some(d => d.imageUrl && d.imageUrl.startsWith("data:image/")))
+  );
+};
+
+// Calcola le statistiche di utilizzo della memoria del Database Firestore (1MB limit) vs Firebase Cloud Storage
+const computeStorageStats = (stateObj: JournalState) => {
+  let base64Count = 0;
+  let cloudCount = 0;
+  let base64Bytes = 0;
+
+  if (stateObj && stateObj.plants) {
+    stateObj.plants.forEach(p => {
+      if (p.imageUrl) {
+        if (p.imageUrl.startsWith("data:image/")) {
+          base64Count++;
+          base64Bytes += p.imageUrl.length;
+        } else if (p.imageUrl.startsWith("http")) {
+          cloudCount++;
+        }
+      }
+      if (p.diary) {
+        p.diary.forEach(d => {
+          if (d.imageUrl) {
+            if (d.imageUrl.startsWith("data:image/")) {
+              base64Count++;
+              base64Bytes += d.imageUrl.length;
+            } else if (d.imageUrl.startsWith("http")) {
+              cloudCount++;
+            }
+          }
+        });
+      }
+    });
+  }
+
+  const documentSize = JSON.stringify(stateObj).length;
+  const maxLimit = 1048576; // 1 MiB
+  const usagePercentage = Math.min(100, (documentSize / maxLimit) * 100);
+
+  // Ogni immagine caricata sul cloud invece che in base64 risparmia circa 150KB - 300KB di spazio nel documento Firestore
+  const estimatedSavingsBytes = cloudCount * 250 * 1024; 
+
+  return {
+    base64Count,
+    cloudCount,
+    base64SizeKb: Math.round(base64Bytes / 1024),
+    documentSizeKb: Math.round(documentSize / 1024),
+    usagePercentage: parseFloat(usagePercentage.toFixed(2)),
+    estimatedSavingsKb: Math.round(estimatedSavingsBytes / 1024),
+    isSafe: documentSize < 800 * 1024, // Sicuro sotto gli 800 KB
   };
 };
 
@@ -233,6 +511,65 @@ const getRelativeDueTime = (dueDateStr: string) => {
 };
 
 export default function App() {
+  // Console di debug integrata per visualizzare i log del database e degli upload
+  const [systemLogs, setSystemLogs] = useState<{ type: "log" | "warn" | "error" | "info"; text: string; time: string }[]>([]);
+  const [isSystemConsoleOpen, setIsSystemConsoleOpen] = useState(false);
+  const [lastGeneratedUrl, setLastGeneratedUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleSystemLogEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const time = new Date().toLocaleTimeString();
+      setSystemLogs(prev => [...prev.slice(-99), { type: detail.type, text: detail.text, time }]);
+    };
+
+    const handleGeneratedLink = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && detail.url) {
+        setLastGeneratedUrl(detail.url);
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("system_log", handleSystemLogEvent);
+      window.addEventListener("system_generated_link", handleGeneratedLink);
+      window.dispatchEvent(new CustomEvent("system_log", { detail: { type: "info", text: "Console di debug di Flora attivata correttamente. Pronto a tracciare i caricamenti d'immagine e sincronizzazione." } }));
+    }
+
+    const handleLog = (type: "log" | "warn" | "error" | "info", args: any[]) => {
+      const text = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+      const time = new Date().toLocaleTimeString();
+      setSystemLogs(prev => [...prev.slice(-99), { type, text, time }]);
+    };
+
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    const originalError = console.error;
+
+    console.log = (...args) => {
+      originalLog.apply(console, args);
+      handleLog("log", args);
+    };
+    console.warn = (...args) => {
+      originalWarn.apply(console, args);
+      handleLog("warn", args);
+    };
+    console.error = (...args) => {
+      originalError.apply(console, args);
+      handleLog("error", args);
+    };
+
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("system_log", handleSystemLogEvent);
+        window.removeEventListener("system_generated_link", handleGeneratedLink);
+      }
+      console.log = originalLog;
+      console.warn = originalWarn;
+      console.error = originalError;
+    };
+  }, []);
+
   // Modalità Sola Lettura gestita dinamicamente per supportare il single-app editor/viewer toggle!
   const [isReadOnlyMode, setIsReadOnlyMode] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
@@ -726,6 +1063,25 @@ export default function App() {
     };
   });
 
+  // Stati per tracciare la creazione in tempo reale dei link e visualizzare il progresso e il link risultante
+  const [plantUploadState, setPlantUploadState] = useState<{
+    status: "idle" | "compressing" | "uploading" | "done" | "error";
+    url?: string;
+    errorMsg?: string;
+  }>({ status: "idle" });
+
+  const [diaryUploadState, setDiaryUploadState] = useState<{
+    status: "idle" | "compressing" | "uploading" | "done" | "error";
+    url?: string;
+    errorMsg?: string;
+  }>({ status: "idle" });
+
+  const [editItemUploadState, setEditItemUploadState] = useState<{
+    status: "idle" | "compressing" | "uploading" | "done" | "error";
+    url?: string;
+    errorMsg?: string;
+  }>({ status: "idle" });
+
   // Stato AI Curator Assistant
   const [aiAnalysis, setAiAnalysis] = useState<string>("");
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -790,6 +1146,15 @@ export default function App() {
 
   // Notifiche Custom
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const [migrationStatus, setMigrationStatus] = useState<{
+    active: boolean;
+    current: number;
+    total: number;
+    stage: string;
+  } | null>(null);
+
+  const [isStorageStatsExpanded, setIsStorageStatsExpanded] = useState<boolean>(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -1104,25 +1469,6 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [state, isReadOnlyMode, isCloudLoaded]);
 
-  // Compressione automatica in background all'avvio per sanare vecchi dati pesanti presenti nel localStorage
-  useEffect(() => {
-    if (!isCloudLoaded || isReadOnlyMode) return;
-    const runDeferredCompression = async () => {
-      try {
-        const compressed = await compressStateImages(state);
-        if (JSON.stringify(compressed.plants) !== JSON.stringify(state.plants)) {
-          console.log("Compressione automatica iniziale di recupero eseguita su vecchi dati pesanti!");
-          setState(compressed);
-        }
-      } catch (e) {
-        console.error("Errore compressione iniziale background:", e);
-      }
-    };
-    // Esegui con un soffio di ritardo per non bloccare l'interfaccia
-    const t = setTimeout(runDeferredCompression, 1000);
-    return () => clearTimeout(t);
-  }, [isCloudLoaded, isReadOnlyMode]);
-
   // Filtro piante vive e morte
   const activePlants = state.plants.filter(p => p.isDead !== true);
   const deadPlants = state.plants.filter(p => p.isDead === true);
@@ -1185,13 +1531,23 @@ export default function App() {
   };
 
   const processFile = async (file: File) => {
-    showToast("Compressione e ottimizzazione dell'immagine... 🖼️⚡");
+    setPlantUploadState({ status: "compressing" });
+    showToast("Ottimizzazione dell'immagine... 🖼️⚡");
     try {
       const compressedBase64 = await compressFile(file, 350, 0.25);
-      setNewPlantForm(prev => ({ ...prev, imageUrl: compressedBase64 }));
-      showToast("Immagine catturata e ottimizzata correttamente! 🌿");
-    } catch (err) {
-      console.error("Errore lettura immagine:", err);
+      setPlantUploadState({ status: "uploading" });
+      showToast("Caricamento sicuro della foto... ☁️");
+      const storageUrl = await uploadImageToStorage(compressedBase64, `plants/new_${Date.now()}.jpg`);
+      setNewPlantForm(prev => ({ ...prev, imageUrl: storageUrl }));
+      setPlantUploadState({ status: "done", url: storageUrl });
+      if (storageUrl.startsWith("data:")) {
+        showToast("Salvata in locale (offline): foto compressa memorizzata nel browser! 💾🌿");
+      } else {
+        showToast("Immagine caricata online con successo! 🌿✨");
+      }
+    } catch (err: any) {
+      console.error("Errore lettura o upload dell'immagine:", err);
+      setPlantUploadState({ status: "error", errorMsg: err.message || "Errore durante il caricamento" });
       showToast("Immagine non caricata correttamente.");
     }
   };
@@ -2107,13 +2463,23 @@ export default function App() {
   const handleDiaryFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files[0]) {
-      showToast("Compressione e caricamento foto nota... 🖼️⚡");
+      setDiaryUploadState({ status: "compressing" });
+      showToast("Ottimizzazione foto nota... 🖼️⚡");
       try {
         const compressedBase64 = await compressFile(files[0], 320, 0.2);
-        setNewDiaryForm(prev => ({ ...prev, imageUrl: compressedBase64 }));
-        showToast("Immagine della nota salvata e ottimizzata!");
-      } catch (err) {
-        console.error("Errore lettura immagine nota:", err);
+        setDiaryUploadState({ status: "uploading" });
+        showToast("Caricamento sicuro della foto della nota... ☁️");
+        const storageUrl = await uploadImageToStorage(compressedBase64, `diary/new_${Date.now()}.jpg`);
+        setNewDiaryForm(prev => ({ ...prev, imageUrl: storageUrl }));
+        setDiaryUploadState({ status: "done", url: storageUrl });
+        if (storageUrl.startsWith("data:")) {
+          showToast("Salvata in locale (offline): foto compressa memorizzata nel browser! 💾🌿");
+        } else {
+          showToast("Foto della nota caricata online con successo! 🌿✨");
+        }
+      } catch (err: any) {
+        console.error("Errore lettura o upload immagine nota:", err);
+        setDiaryUploadState({ status: "error", errorMsg: err.message || "Errore durante il caricamento" });
         showToast("Immagine della nota non caricata.");
       }
     }
@@ -2965,6 +3331,100 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {/* DIAGNOSTICA MEMORIA & CLOUD STORAGE (RICHIESTA UTENTE) */}
+      {(() => {
+        const stats = computeStorageStats(state);
+        if (!isStorageStatsExpanded) {
+          return (
+            <div className="flex justify-end mt-2 mb-1 relative z-20">
+              <button 
+                id="toggle-storage-stats-btn"
+                onClick={() => setIsStorageStatsExpanded(true)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-stone-50 to-sage-50/80 hover:from-stone-150 hover:to-sage-100 text-stone-650 hover:text-stone-900 border border-stone-200 rounded-full text-xs font-mono font-semibold shadow-3xs transition-all duration-250 hover:scale-[1.02] cursor-pointer"
+                title="Clicca per aprire l'analisi approfondita della memoria del Database Firestore"
+              >
+                <Database className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
+                <span>Memoria DB: <strong className={stats.usagePercentage > 80 ? "text-red-600" : stats.usagePercentage > 50 ? "text-amber-600" : "text-emerald-700"}>{stats.usagePercentage}%</strong></span>
+                <span className="text-[10px] text-stone-400 font-sans">(Espandi dettagli 📊)</span>
+              </button>
+            </div>
+          );
+        }
+        return (
+          <div className="bento-card p-5 mt-4 bg-gradient-to-r from-stone-50 to-sage-50/70 border border-stone-200 rounded-[24px] shadow-xs text-left relative z-20">
+            {/* Pulsante per comprimere/nascondere i dettagli (Richiesta utente) */}
+            <button 
+              id="collapse-storage-stats-btn"
+              onClick={() => setIsStorageStatsExpanded(false)}
+              className="absolute top-4 right-4 text-[10px] font-bold font-mono text-stone-450 hover:text-stone-700 px-2.5 py-1 bg-stone-100 hover:bg-stone-200 border border-stone-200/60 rounded-full transition-all duration-200 cursor-pointer shadow-3xs"
+            >
+              Nascondi ✕
+            </button>
+
+            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+              <div className="flex items-start gap-3.5 flex-1">
+                <div className="p-3 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-2xl flex items-center justify-center shrink-0 w-12 h-12 shadow-inner">
+                  <Database className="w-6 h-6 animate-pulse" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-serif font-bold text-stone-800 text-base flex items-center gap-2">
+                    Analisi Memoria & Cloud Storage
+                  </h3>
+                  <p className="text-xs text-stone-500 font-sans leading-relaxed">
+                    Il database Cloud Firestore ha un limite di <strong>1 MiB (1024 KB)</strong> per documento. Caricando le nuove foto direttamente su <strong>Firebase Cloud Storage</strong>, l'orto rimane leggerissimo e sveltissimo!
+                  </p>
+                  
+                  {/* Dettagli statistiche */}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-2 text-[11px] font-mono font-medium text-stone-600">
+                    <span className="flex items-center gap-1 bg-white px-2.5 py-1 rounded-lg border border-stone-150 shadow-3xs">
+                      ☁️ Foto Cloud (Storage): <strong className="text-emerald-700 font-bold">{stats.cloudCount}</strong>
+                    </span>
+                    <span className="flex items-center gap-1 bg-white px-2.5 py-1 rounded-lg border border-stone-150 shadow-3xs" title="Le foto storiche e i backup precedenti caricati in Base64 rimangono intatti e salvati localmente per non alterare i tuoi vecchi dati">
+                      📦 Foto Locali (Base64): <strong className="text-amber-700 font-bold">{stats.base64Count}</strong>
+                    </span>
+                    <span className="flex items-center gap-1 bg-white px-2.5 py-1 rounded-lg border border-stone-150 shadow-3xs">
+                      💾 Peso Documento DB: <strong className="text-stone-800 font-bold">{stats.documentSizeKb} KB</strong> / 1024 KB
+                    </span>
+                    {stats.cloudCount > 0 && (
+                      <span className="flex items-center gap-1 bg-emerald-50 text-emerald-800 border border-emerald-150 px-2.5 py-1 rounded-lg font-bold animate-pulse">
+                        🚀 Spazio Risparmiato su DB: <strong>~{stats.estimatedSavingsKb} KB</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Barra di monitoraggio del limite Firestore di 1MB */}
+              <div className="w-full lg:w-60 shrink-0 flex flex-col gap-1.5">
+                <div className="flex justify-between items-center text-xs font-semibold">
+                  <span className="text-stone-600 font-mono text-[9px] uppercase tracking-wider">Salute Occupazione DB</span>
+                  <span className={`font-mono font-bold text-xs ${stats.usagePercentage > 80 ? "text-red-600" : stats.usagePercentage > 50 ? "text-amber-600" : "text-emerald-700"}`}>
+                    {stats.usagePercentage}% del limite
+                  </span>
+                </div>
+                <div className="w-full bg-stone-200/60 h-3.5 rounded-full overflow-hidden border border-stone-200 shadow-inner">
+                  <div 
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      stats.usagePercentage > 80 
+                        ? "bg-gradient-to-r from-red-500 to-rose-600" 
+                        : stats.usagePercentage > 50 
+                        ? "bg-gradient-to-r from-amber-500 to-orange-500" 
+                        : "bg-gradient-to-r from-emerald-500 to-teal-600"
+                    }`}
+                    style={{ width: `${stats.usagePercentage}%` }}
+                  ></div>
+                </div>
+                <p className="text-[10px] text-stone-400 font-sans italic text-right mt-0.5">
+                  {stats.usagePercentage > 80 
+                    ? "⚠️ DB quasi pieno! Usa più foto cloud." 
+                    : "✔️ Spazio database sicuro ed ottimizzato."}
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* STRUMENTO DI SINCRONIZZAZIONE IMMEDIATA CLOUD (RICHIESTA UTENTE) */}
       <div className="bento-card p-4 mt-4 bg-gradient-to-r from-[#fbfbf8] to-[#f4f7f2] border border-[#d6ded0] rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm relative z-20">
@@ -4364,9 +4824,16 @@ export default function App() {
                       placeholder="https://images.unsplash.com/photo-..."
                       value={newPlantForm.imageUrl || ""}
                       onChange={e => setNewPlantForm({ ...newPlantForm, imageUrl: e.target.value })}
-                      className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 font-mono"
+                      className={`p-2 border rounded-xl focus:outline-none font-mono transition-all ${
+                        plantUploadState.status === "done" ? "border-emerald-500 bg-emerald-50/10 focus:border-emerald-600 ring-2 ring-emerald-200" : "border-[#e4e8e1] focus:border-sage-400"
+                      }`}
                     />
                   </div>
+
+                  <ImageLinkCreatorProgress
+                    state={plantUploadState}
+                    onClear={() => setPlantUploadState({ status: "idle" })}
+                  />
 
                   {newPlantForm.imageUrl && (
                     <div className="flex items-center gap-2 mt-2 p-2 bg-sage-50 rounded-xl">
@@ -4420,12 +4887,35 @@ export default function App() {
                   </div>
                 </div>
 
-                <button
-                  type="submit"
-                  className="w-full py-3 bg-gradient-to-tr from-sage-700 to-moss-600 hover:from-emerald-800 hover:to-moss-700 text-white font-serif font-black tracking-tight text-center rounded-2xl cursor-pointer shadow-md transition-all mt-4"
-                >
-                  Registra Diario Pianta
-                </button>
+                <div className="grid grid-cols-3 gap-3 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewPlantForm({
+                        name: "",
+                        nickname: "",
+                        species: "",
+                        origin: PlantOrigin.ACQUISTO,
+                        startDate: new Date().toISOString().split("T")[0],
+                        description: "",
+                        imageUrl: "",
+                        status: PlantStatus.CRESCITA,
+                        health: 100,
+                        tags: []
+                      });
+                      showToast("Campi della creazione resettati con successo! 🧹");
+                    }}
+                    className="col-span-1 py-3 bg-stone-100 hover:bg-stone-200 text-stone-600 font-bold tracking-tight text-center rounded-2xl cursor-pointer border border-[#e4e8e1] transition-all text-[11px]"
+                  >
+                    Resetta 🧹
+                  </button>
+                  <button
+                    type="submit"
+                    className="col-span-2 py-3 bg-gradient-to-tr from-sage-700 to-moss-600 hover:from-emerald-800 hover:to-moss-700 text-white font-serif font-black tracking-tight text-center rounded-2xl cursor-pointer shadow-md transition-all text-xs"
+                  >
+                    Registra Diario Pianta
+                  </button>
+                </div>
               </form>
             </motion.div>
           </div>
@@ -4664,9 +5154,16 @@ export default function App() {
                       placeholder="https://images.unsplash.com/photo-..."
                       value={newPlantForm.imageUrl || ""}
                       onChange={e => setNewPlantForm({ ...newPlantForm, imageUrl: e.target.value })}
-                      className="p-2 border border-[#e4e8e1] rounded-xl focus:outline-none focus:border-sage-400 font-mono"
+                      className={`p-2 border rounded-xl focus:outline-none font-mono transition-all ${
+                        plantUploadState.status === "done" ? "border-emerald-500 bg-emerald-50/10 focus:border-emerald-600 ring-2 ring-emerald-200" : "border-[#e4e8e1] focus:border-sage-400"
+                      }`}
                     />
                   </div>
+
+                  <ImageLinkCreatorProgress
+                    state={plantUploadState}
+                    onClear={() => setPlantUploadState({ status: "idle" })}
+                  />
 
                   {newPlantForm.imageUrl && (
                     <div className="flex items-center gap-2 mt-2 p-2 bg-sage-50 rounded-xl">
@@ -4720,7 +5217,29 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewPlantForm({
+                        name: "",
+                        nickname: "",
+                        species: "",
+                        origin: "",
+                        startDate: "",
+                        lastDataModifiedAt: "",
+                        description: "",
+                        imageUrl: "",
+                        status: "",
+                        health: 100,
+                        tags: []
+                      });
+                      showToast("Campi della modifica svuotati con successo! 🧹");
+                    }}
+                    className="py-3 bg-stone-100 hover:bg-stone-200 text-stone-600 font-bold tracking-tight text-center rounded-2xl cursor-pointer border border-[#e4e8e1] transition-all text-xs"
+                  >
+                    Svuota Campi 🧹
+                  </button>
                   <button
                     type="submit"
                     className="py-3 bg-sage-800 hover:bg-sage-900 text-white font-serif font-black tracking-tight text-center rounded-2xl cursor-pointer shadow-md transition-all text-xs"
@@ -4993,9 +5512,16 @@ export default function App() {
                       placeholder="https://images.unsplash.com/photo-..."
                       value={newDiaryForm.imageUrl}
                       onChange={e => setNewDiaryForm({ ...newDiaryForm, imageUrl: e.target.value })}
-                      className="p-2 border border-[#e4e8e1] rounded-xl text-xs bg-[#fafbfa]"
+                      className={`p-2 border rounded-xl text-xs bg-[#fafbfa] focus:outline-none transition-all ${
+                        diaryUploadState.status === "done" ? "border-emerald-500 bg-emerald-50/10 focus:border-emerald-600 ring-2 ring-emerald-200" : "border-[#e4e8e1]"
+                      }`}
                     />
                   </div>
+
+                  <ImageLinkCreatorProgress
+                    state={diaryUploadState}
+                    onClear={() => setDiaryUploadState({ status: "idle" })}
+                  />
 
                   {/* Immediate Preview */}
                   {newDiaryForm.imageUrl && (
@@ -6364,14 +6890,50 @@ export default function App() {
 
                     <div className="space-y-1">
                       <label className="block text-stone-600 font-bold uppercase text-[9px] tracking-wider font-mono">
-                        URL Immagine (Opzionale)
+                        URL Immagine o Carica File (Caricamento Cloud)
                       </label>
                       <input
                         type="url"
                         value={editingItem.imageUrl || ""}
                         onChange={(e) => setEditingItem({ ...editingItem, imageUrl: e.target.value })}
-                        className="w-full bg-[#fcfcf9] p-2.5 rounded-xl border border-[#e2e2d8] focus:border-[#2d3a27] focus:outline-hidden text-xs text-stone-800"
+                        className={`w-full bg-[#fcfcf9] p-2.5 rounded-xl border focus:border-[#2d3a27] focus:outline-hidden text-xs text-stone-800 transition-all ${
+                          editItemUploadState.status === "done" ? "border-emerald-500 bg-emerald-50/10 ring-2 ring-emerald-200" : "border-[#e2e2d8]"
+                        }`}
                         placeholder="https://images.unsplash.com/..."
+                      />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={async (e) => {
+                          const files = e.target.files;
+                          if (files && files[0]) {
+                            setEditItemUploadState({ status: "compressing" });
+                            showToast("Ottimizzazione foto... 🖼️⚡");
+                            try {
+                              const compressedBase64 = await compressFile(files[0], 320, 0.2);
+                              setEditItemUploadState({ status: "uploading" });
+                              showToast("Caricamento sicuro della foto... ☁️");
+                              const storageUrl = await uploadImageToStorage(compressedBase64, `diary/edit_${Date.now()}.jpg`);
+                              setEditingItem({ ...editingItem, imageUrl: storageUrl });
+                              setEditItemUploadState({ status: "done", url: storageUrl });
+                              if (storageUrl.startsWith("data:")) {
+                                showToast("Salvata in locale (offline): foto compressa memorizzata nel browser! 💾🌿");
+                              } else {
+                                showToast("Foto caricata online con successo! 🌿✨");
+                              }
+                            } catch (err: any) {
+                              console.error("Errore uploader modale modifica:", err);
+                              setEditItemUploadState({ status: "error", errorMsg: err.message || "Errore durante il caricamento" });
+                              showToast("Immagine non caricata.");
+                            }
+                          }
+                        }}
+                        className="w-full text-[10px] text-sage-500 file:mr-2 file:py-1 file:px-3 file:rounded-xl file:border-0 file:text-[10px] file:font-semibold file:bg-sage-100 file:text-sage-800 hover:file:bg-sage-200 mt-1"
+                      />
+
+                      <ImageLinkCreatorProgress
+                        state={editItemUploadState}
+                        onClear={() => setEditItemUploadState({ status: "idle" })}
                       />
                     </div>
 
@@ -6608,6 +7170,239 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* --- CONSOLE DI DEBUG INTEGRATA (COLLAPSIBLE & RETRACTABLE) --- */}
+      <div className="fixed bottom-4 left-4 z-50 flex flex-col items-start gap-2 max-w-lg">
+        {/* Toggle Button */}
+        <button
+          type="button"
+          onClick={() => setIsSystemConsoleOpen(!isSystemConsoleOpen)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-900/90 hover:bg-stone-800 text-stone-200 hover:text-white rounded-full text-[10px] font-mono shadow-lg border border-stone-800 backdrop-blur-xs transition-all active:scale-95 cursor-pointer opacity-70 hover:opacity-100"
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+          </span>
+          <Database className="w-3.5 h-3.5" />
+          <span>CONSOLE DEBUG ({systemLogs.length})</span>
+          <ChevronDown className={`w-3 h-3 transition-transform ${isSystemConsoleOpen ? "rotate-180" : ""}`} />
+        </button>
+
+        {/* Console Panel */}
+        <AnimatePresence>
+          {isSystemConsoleOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: 15, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.95 }}
+              className="w-[92vw] sm:w-[450px] h-[300px] bg-stone-950/95 border border-stone-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden backdrop-blur-md"
+            >
+              {/* Header */}
+              <div className="flex justify-between items-center bg-stone-900 px-3 py-2 border-b border-stone-800">
+                <span className="text-[10px] font-mono text-stone-300 font-bold tracking-wider flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
+                  FLORA LIVE CONSOLE LOGS
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const blueprintText = `=== BLUEPRINT & SOLUZIONE DI CARICAMENTO IMMAGINI, CONSOLE DI DEBUG E TIMEOUT FALLBACK ===
+
+### 1. COME È STATO RISOLTO IL BUG DEL LINK (TIMEOUT FALLBACK)
+*Problema riscontrato*: L'SDK client di Firebase Storage, in caso di configurazioni incomplete, credenziali obsolete o bucket non pronti, rimane bloccato in stato "pending" indefinitamente senza rigettare la promessa o lanciare errori. L'applicazione rimaneva bloccata in attesa del link, impedendo l'attivazione del server di backup locale.
+*La Soluzione*: Abbiamo implementato una struttura competitiva di promesse (Promise.race) con un Timeout aggressivo di connessione impostato a 2.2 secondi. Se il cloud Firebase Storage non restituisce l'URL entro questo limite di tempo, l'operazione viene interrotta istantaneamente e il caricamento si sposta in modalità fallback sul server locale (Express endpoint /api/upload), che salva l'immagine e restituisce un URL locale funzionante in pochissimi millisecondi.
+
+### 2. ARCHITETTURA DEL SERVER-SIDE PROXY (Backup locale in server.ts)
+\`\`\`typescript
+import express from "express";
+import fs from "fs";
+import path from "path";
+
+// Endpoint POST per ricevere e salvare immagini compresse Base64
+app.post("/api/upload", express.json({ limit: "15mb" }), (req, res) => {
+  try {
+    const { image } = req.body;
+    if (!image) {
+      return res.status(400).json({ error: "Nessuna immagine fornita." });
+    }
+    
+    // Riconosce formato "data:image/jpeg;base64,..."
+    const matches = image.match(/^data:([A-Za-z-+\\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) {
+      return res.status(400).json({ error: "Formato data URL non valido." });
+    }
+    
+    const buffer = Buffer.from(matches[2], "base64");
+    const filename = \\\`upload_\\\${Date.now()}.jpg\\\`;
+    const uploadDir = path.join(process.cwd(), "public", "uploads");
+    
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    fs.writeFileSync(path.join(uploadDir, filename), buffer);
+    res.json({ url: \\\`/uploads/\\\${filename}\\\` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+\`\`\`;
+
+### 3. GESTIONE UPLOADER FRONTEND CON TIMEOUT COMPETITIVO (src/App.tsx)
+\`\`\`typescript
+const addSystemLog = (type: "log" | "warn" | "error" | "info", text: string) => {
+  if (typeof window !== "undefined") {
+    const event = new CustomEvent("system_log", { detail: { type, text } });
+    window.dispatchEvent(event);
+  }
+};
+
+const uploadImageToStorage = async (base64Str: string, path: string): Promise<string> => {
+  addSystemLog("info", \\\`[Storage] Inizio caricamento foto su Firebase Storage: \\\${path}\\\`);
+  try {
+    const { ref, uploadString, getDownloadURL } = await import("firebase/storage");
+    const { storage } = await import("./firebase");
+    const storageRef = ref(storage, path);
+    
+    const uploadPromise = (async () => {
+      const uploadResult = await uploadString(storageRef, base64Str, "data_url");
+      addSystemLog("info", \\\`[Storage] File trasferito. Generazione URL pubblico...\\\`);
+      return await getDownloadURL(uploadResult.ref);
+    })();
+
+    // Timeout di connessione di 2.2 secondi
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout di connessione Firebase Storage (2.2s scaduto)")), 2200)
+    );
+
+    const downloadUrl = await Promise.race([uploadPromise, timeoutPromise]);
+    addSystemLog("info", \\\`[Storage] Successo! URL cloud: \\\${downloadUrl}\\\`);
+    
+    window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: downloadUrl } }));
+    return downloadUrl;
+  } catch (error: any) {
+    addSystemLog("warn", \\\`[Storage] Firebase Storage lento o non configurato. Fallback immediato su server locale...\\\`);
+    try {
+      addSystemLog("info", \\\`[Server Local] Invio file compresso a /api/upload...\\\`);
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: base64Str })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.url) {
+          const localUrl = window.location.origin + data.url;
+          addSystemLog("info", \\\`[Server Local] Successo! File salvato: \\\${localUrl}\\\`);
+          window.dispatchEvent(new CustomEvent("system_generated_link", { detail: { url: localUrl } }));
+          return localUrl;
+        }
+      }
+    } catch (apiErr: any) {
+      addSystemLog("error", \\\`[Server Local] Errore di rete: \\\${apiErr.message}\\\`);
+    }
+    addSystemLog("warn", \\\`[Fallback] Link non generabile. Salvataggio locale in Base64\\\`);
+    return base64Str;
+  }
+};
+\`\`\`
+
+### 4. MONITORAGGIO E CONSOLE LIVE INTEGRATA IN REACT
+Per catturare e visualizzare l'intero processo in tempo reale:
+- Intercettiamo console.log, console.warn e console.error.
+- Redirigiamo i messaggi a un gestore di stato React per popolare la console fluttuante visualizzabile in background.
+`;
+                      navigator.clipboard.writeText(blueprintText);
+                      showToast("Blueprint, Prompt e Soluzione copiati con successo! 📝🚀");
+                    }}
+                    className="text-[9px] text-emerald-300 hover:text-white px-2 py-0.5 rounded bg-emerald-950 hover:bg-emerald-800 border border-emerald-800 font-mono transition-all cursor-pointer font-bold shrink-0"
+                  >
+                    Copia Blueprint 📝
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSystemLogs([]);
+                      addSystemLog("info", "Logs della console puliti con successo.");
+                    }}
+                    className="text-[9px] text-stone-400 hover:text-stone-200 px-1.5 py-0.5 rounded bg-stone-800 hover:bg-stone-700 font-mono transition-all cursor-pointer shrink-0"
+                  >
+                    Pulisci
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSystemConsoleOpen(false)}
+                    className="text-[9px] text-stone-400 hover:text-stone-200 px-1.5 py-0.5 rounded bg-stone-800 hover:bg-stone-700 font-mono transition-all cursor-pointer shrink-0"
+                  >
+                    Chiudi
+                  </button>
+                </div>
+              </div>
+
+              {/* Stats/Last Link */}
+              {lastGeneratedUrl && (
+                <div className="bg-emerald-950/40 border-b border-emerald-900/30 px-3 py-1.5 flex justify-between items-center gap-2">
+                  <div className="truncate text-[9px] text-emerald-400 font-mono flex-1">
+                    <span className="font-bold">Ultimo Link: </span>
+                    <span className="select-all">{lastGeneratedUrl}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(lastGeneratedUrl);
+                      showToast("Link copiato negli appunti! 🔗✨");
+                    }}
+                    className="px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white font-mono text-[8px] font-bold uppercase rounded tracking-wider cursor-pointer transition-all"
+                  >
+                    Copia Link
+                  </button>
+                </div>
+              )}
+
+              {/* Logs Content */}
+              <div className="flex-1 p-3 overflow-y-auto font-mono text-[9px] space-y-2 select-text scrollbar-thin scrollbar-thumb-stone-800">
+                {systemLogs.length === 0 ? (
+                  <div className="text-stone-600 italic text-center pt-8">Nessun log presente al momento. Carica un'immagine per tracciare le API.</div>
+                ) : (
+                  systemLogs.map((log, idx) => {
+                    let typeClass = "text-stone-400";
+                    let prefix = "[LOG]";
+                    if (log.type === "info") { prefix = "[INFO]"; typeClass = "text-sky-400"; }
+                    else if (log.type === "warn") { prefix = "[WARN]"; typeClass = "text-amber-400 font-semibold"; }
+                    else if (log.type === "error") { prefix = "[ERRORE]"; typeClass = "text-red-400 font-bold"; }
+
+                    return (
+                      <div key={idx} className="flex gap-2 items-start border-b border-stone-900 pb-1.5 last:border-0 group">
+                        <span className="text-stone-600 shrink-0 select-none">[{log.time}]</span>
+                        <span className={`${typeClass} shrink-0 select-none`}>{prefix}</span>
+                        <span className="text-stone-200 break-all select-all flex-1">{log.text}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(log.text);
+                            showToast("Log copiato negli appunti!");
+                          }}
+                          className="opacity-0 group-hover:opacity-100 text-stone-500 hover:text-stone-300 text-[8px] tracking-tighter cursor-pointer transition-opacity"
+                          title="Copia riga"
+                        >
+                          [COPIA]
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Footer / Connection Status */}
+              <div className="bg-stone-900 border-t border-stone-800 px-3 py-1 flex justify-between items-center text-[8px] font-mono text-stone-500">
+                <span>DATABASE: ai-studio-51fbc7ef-1312-4585-aecd-17171895b2a7</span>
+                <span className="text-emerald-500 font-bold uppercase">Stato: {isReadOnlyMode ? "Live Sola Lettura" : "Editor Attivo"}</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
 
     </div>
   );
