@@ -3139,7 +3139,7 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[100] bg-[#1e271a]/55 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto"
+              className="fixed inset-0 z-[100] bg-[#1e271a]/55 backdrop-blur-md flex justify-center items-start p-4 overflow-y-auto"
             >
               <motion.div
                 initial={{ scale: 0.95, y: 15 }}
@@ -4613,12 +4613,12 @@ export default function App() {
       {/* --- MODALE 1: IMPOSTAZIONI ORTO --- */}
       <AnimatePresence>
         {isSettingsOpen && (
-          <div className="fixed inset-0 bg-black/30 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="fixed inset-0 bg-black/30 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 my-8"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-bold text-[#2d3a2e] text-base">Flora Impostazioni</h3>
@@ -4740,7 +4740,7 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-lg w-full space-y-4 my-auto text-left"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-lg w-full space-y-4 my-8 text-left"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-black text-[#2d3a2e] text-lg flex items-center gap-1.5">
@@ -5042,7 +5042,7 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-lg w-full space-y-4 my-auto text-left"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-lg w-full space-y-4 my-8 text-left"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-black text-[#2d3a2e] text-lg flex items-center gap-1.5">
@@ -5381,7 +5381,7 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-xl w-full space-y-4 my-auto text-left shadow-2xl relative"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-xl w-full space-y-4 my-8 text-left shadow-2xl relative"
             >
               <div className="flex justify-between items-center pb-3 border-b border-[#e4e8e1]">
                 <div className="flex items-center gap-2">
@@ -5530,12 +5530,12 @@ export default function App() {
       {/* --- MODALE 4: AGGIUNGI NOTA DIARIO TIMELINE --- */}
       <AnimatePresence>
         {isNewDiaryOpen && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 my-8"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-bold text-[#2d3a2e] text-base flex items-center gap-1.5">
@@ -5672,12 +5672,12 @@ export default function App() {
       {/* --- MODALE 5: AGGIUNGI ATTIVITÀ PERSONALIZZATA --- */}
       <AnimatePresence>
         {isAddActivityOpen && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 font-sans"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 font-sans my-8"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-bold text-[#2d3a2e] text-base flex items-center gap-1.5">
@@ -5759,12 +5759,12 @@ export default function App() {
       {/* --- MODALE 6: CONFIRMATION CANCELLAZIONE PIANTA --- */}
       <AnimatePresence>
         {plantIdToDelete && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 font-sans"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 font-sans my-8"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-bold text-red-700 text-base flex items-center gap-1.5">
@@ -5818,12 +5818,12 @@ export default function App() {
           const targetPlant = state.plants.find(p => p.id === plantIdToDeclareDead);
           if (!targetPlant) return null;
           return (
-            <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+            <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
               <motion.div
                 initial={{ scale: 0.95, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.95, opacity: 0 }}
-                className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 font-sans"
+                className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 font-sans my-8"
               >
                 <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                   <h3 className="font-serif font-bold text-stone-700 text-base flex items-center gap-1.5">
@@ -6420,12 +6420,12 @@ export default function App() {
               {/* Modale interno inserimento Nuova Specie in Corso nell'Agenda */}
               <AnimatePresence>
                 {isAddTrackerOpen && (
-                  <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+                  <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
                     <motion.div
                       initial={{ scale: 0.95, opacity: 0 }}
                       animate={{ scale: 1, opacity: 1 }}
                       exit={{ scale: 0.95, opacity: 0 }}
-                      className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 font-sans"
+                      className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 font-sans my-8"
                     >
                       <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                         <h3 className="font-serif font-bold text-emerald-800 text-base flex items-center gap-1.5">
@@ -6522,12 +6522,12 @@ export default function App() {
         {isHistoryOpen && (() => {
           const trackersList = state.smartTrackers || [];
           return (
-            <div className="fixed inset-0 bg-black/50 backdrop-blur-md flex items-center justify-center p-4 z-[80]">
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-md flex justify-center items-start p-4 z-[80] overflow-y-auto">
               <motion.div
                 initial={{ scale: 0.95, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.95, opacity: 0 }}
-                className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-2xl w-full max-h-[85vh] flex flex-col space-y-4 font-sans shadow-2xl"
+                className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-2xl w-full max-h-[85vh] flex flex-col space-y-4 font-sans shadow-2xl my-8"
               >
                 <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                   <div className="flex items-center gap-2">
@@ -6739,12 +6739,12 @@ export default function App() {
       {/* --- MODALE 7: CONDIVISIONE LINK COPIA STATO --- */}
       <AnimatePresence>
         {isShareOpen && (
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex justify-center items-start p-4 z-50 overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-md w-full space-y-4 font-sans"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-md w-full space-y-4 font-sans my-8"
             >
               <div className="flex justify-between items-center pb-2 border-b border-[#e4e8e1]">
                 <h3 className="font-serif font-bold text-[#2d3a2e] text-base flex items-center gap-1.5">
@@ -6838,12 +6838,12 @@ export default function App() {
       {/* --- MODALE 10: CONFERMA RIMOZIONE ELEMENTO (LONG PRESS) --- */}
       <AnimatePresence>
         {deleteConfirmItem && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-[80]">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex justify-center items-start p-4 z-[80] overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 shadow-2xl font-sans"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-sm w-full space-y-4 shadow-2xl font-sans my-8"
             >
               <div className="flex items-center gap-3 pb-2 border-b border-stone-100">
                 <div className="p-2 bg-red-50 text-red-600 rounded-xl">
@@ -6918,12 +6918,12 @@ export default function App() {
       {/* --- MODALE 12: MODIFICA ELEMENTO SELEZIONATO --- */}
       <AnimatePresence>
         {editingItem && (
-          <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[90]">
+          <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-xs flex justify-center items-start p-4 z-[90] overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0, y: 15 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.95, opacity: 0, y: 10 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-md w-full space-y-4 shadow-2xl font-sans text-xs text-sage-800"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-6 max-w-md w-full space-y-4 shadow-2xl font-sans text-xs text-sage-800 my-8"
             >
               <div className="flex items-center justify-between pb-3 border-b border-stone-100">
                 <div className="flex items-center gap-2">
@@ -7146,12 +7146,12 @@ export default function App() {
       {/* --- POPUP DA LONG PRESS SU PIANTA --- */}
       <AnimatePresence>
         {longPressedPlant && (
-          <div className="fixed inset-0 bg-black/45 backdrop-blur-xs flex items-center justify-center p-4 z-[95]">
+          <div className="fixed inset-0 bg-black/45 backdrop-blur-xs flex justify-center items-start p-4 z-[95] overflow-y-auto">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#e4e8e1] p-5 max-w-xs w-full space-y-4 shadow-2xl font-sans"
+              className="bg-white rounded-3xl border border-[#e4e8e1] p-5 max-w-xs w-full space-y-4 shadow-2xl font-sans my-8"
             >
               <div className="text-center pb-2 border-b border-stone-100">
                 <h3 className="font-serif font-bold text-[#2d3a27] text-sm">Opzioni Pianta</h3>

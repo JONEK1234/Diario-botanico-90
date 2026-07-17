@@ -813,12 +813,12 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
       {/* MODALE DI CONFERMA ELIMINAZIONE NOTA CUSTOM */}
       <AnimatePresence>
         {noteIdToDelete && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-[110]">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex justify-center items-start p-4 z-[110] overflow-y-auto">
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="bg-white rounded-3xl border border-[#e2e2d8] p-6 max-w-sm w-full space-y-4 shadow-xl text-center"
+              className="bg-white rounded-3xl border border-[#e2e2d8] p-6 max-w-sm w-full space-y-4 shadow-xl text-center my-8"
             >
               <div className="w-12 h-12 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto">
                 <Trash2 className="w-6 h-6" />
@@ -851,12 +851,12 @@ export const SavedNotesView: React.FC<SavedNotesViewProps> = ({
       {/* MODALE DI SELEZIONE PIANTE PER COPIA NOTA */}
       <AnimatePresence>
         {noteToCopy && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-[110]">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex justify-center items-start p-4 z-[110] overflow-y-auto">
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="bg-white rounded-3xl border border-[#e2e2d8] p-6 max-w-md w-full space-y-4 shadow-xl flex flex-col max-h-[85vh] font-sans text-xs"
+              className="bg-white rounded-3xl border border-[#e2e2d8] p-6 max-w-md w-full space-y-4 shadow-xl flex flex-col max-h-[85vh] font-sans text-xs my-8"
             >
               <div className="flex items-center justify-between pb-3 border-b border-stone-100">
                 <div className="flex items-center gap-2">
